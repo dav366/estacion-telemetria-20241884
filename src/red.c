@@ -34,3 +34,22 @@ void red_finalizar(void)
     /* Liberar los recursos globales de libcurl */
     curl_global_cleanup();
 }
+
+/* Liberar la memoria de una respuesta HTTP */
+void red_liberar_respuesta(RedRespuesta *respuesta)
+{
+    /* Comprobar que el puntero recibido sea valido */
+    if (respuesta == NULL)
+    {
+        return;
+    }
+
+    /* Liberar el contenido almacenado */
+    free(respuesta->contenido);
+
+    /* Restablecer los valores de la estructura */
+    respuesta->contenido = NULL;
+    respuesta->longitud = 0;
+    respuesta->codigo_http = 0;
+}
+
