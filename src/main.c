@@ -33,5 +33,33 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* Identificar y procesar el comando solicitado */
+    if (strcmp(argv[1], "config") == 0)
+    {
+        printf("Comando seleccionado: config\n");
+    }
+    else if (strcmp(argv[1], "descargar") == 0)
+    {
+        printf("Comando seleccionado: descargar\n");
+    }
+    else if (strcmp(argv[1], "analizar") == 0)
+    {
+        printf("Comando seleccionado: analizar\n");
+    }
+    else if (strcmp(argv[1], "enviar") == 0)
+    {
+        printf("Comando seleccionado: enviar\n");
+    }
+    else if (strcmp(argv[1], "escuchar") == 0)
+    {
+        printf("Comando seleccionado: escuchar\n");
+    }
+    else
+    {
+        /* Informar si el comando introducido no existe */
+        printf("Error: comando desconocido.\n");
+        return 1;
+    }
+
     return 0;
 }
