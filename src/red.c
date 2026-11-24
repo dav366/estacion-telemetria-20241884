@@ -53,3 +53,65 @@ void red_liberar_respuesta(RedRespuesta *respuesta)
     respuesta->codigo_http = 0;
 }
 
+
+/* Recibir y almacenar los datos enviados por el servidor */
+static size_t red_recibir_datos(void *datos, size_t tamano,
+                                size_t cantidad, void *usuario)
+{
+    /* Obtener la estructura donde se almacenara la respuesta */
+    RedRespuesta *respuesta = (RedRespuesta *)usuario;
+
+    /* Calcular la cantidad de bytes recibidos */
+    size_t bytes = tamano * cantidad;
+
+    /* Comprobar que la estructura y los datos sean validos */
+    if (respuesta == NULL || (datos == NULL && bytes > 0))
+    {
+        return 0;
+    }
+
+    /* Comprobar que el tamaño no provoque un desbordamiento */
+    if (tamano != 0 && cantidad > (size_t)-1 / tamano)
+    {
+        return 0;
+    }
+
+    bytes = tamano * cantidad;
+
+    /* Comprobar que exista espacio suficiente para los nuevos datos */
+    if (bytes > (size_t)-1 - respuesta->longitud - 1)
+    {
+        return 0;
+    }
+
+    /* Ampliar la memoria para almacenar los datos recibidos */
+    char *nuevo_contenido = realloc(
+        respuesta->contenido,
+        respuesta->longitud + bytes + 1
+    );
+
+    /* Comprobar si se pudo reservar la memoria */
+    if (nuevo_contenido == NULL)
+    {
+        return 0;
+    }
+
+    /* Actualizar el puntero al contenido */
+    respuesta->contenido = nuevo_contenido;
+
+    /* Copiar los nuevos datos al final del contenido */
+    memcpy(
+        respuesta->contenido + respuesta->longitud,
+        datos,
+        bytes
+    );
+
+    /* Actualizar la longitud total */
+    respuesta->longitud += bytes;
+
+    /* Agregar el terminador de cadena */
+    respuesta->contenido[respuesta->longitud] = '\0';
+
+    /* Informar a libcurl cuantos bytes fueron procesados */
+    return bytes;
+}
