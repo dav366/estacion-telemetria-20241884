@@ -15,3 +15,23 @@
 /* Librerías necesarias */
 #include <stdio.h>
 #include <string.h>
+
+/* Función principal del programa */
+int main(int argc, char *argv[])
+{
+    /* Validar que se haya proporcionado exactamente un comando */
+    if (argc != 2)
+    {
+        printf("Uso: estacion <comando>\n");
+        printf("Comandos disponibles:\n");
+        printf("  config\n");
+        printf("  descargar\n");
+        printf("  analizar\n");
+        printf("  enviar\n");
+        printf("  escuchar\n");
+
+        return 1;
+    }
+
+    return 0;
+}
