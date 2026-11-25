@@ -1,4 +1,3 @@
-
 /*****************************************************************************************************/
 /*           Programación para mecatrónicos                                                          */
 /* Nombre:    Omar David Guzmán Guerrero                                                             */
@@ -10,23 +9,25 @@
 /* Link Repositorio GitHub: https://github.com/dav366/estacion-telemetria-20241884                   */
 /*****************************************************************************************************/
 
+/*****************************************************************************************************/
 /* ESTACIÓN DE TELEMETRÍA */
+/* Programación para Mecatrónicos */
+/*****************************************************************************************************/
 
-/* Módulos del sistema */
 #include "datos.h"
 #include "red.h"
 
-/* Bibliotecas necesarias */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
+#include <ctype.h>
 
-/* Cantidad máxima de lecturas por solicitud */
 #define LOTE_DESCARGA 200
 
-/* Convertir texto a número entero */
+/* Convertir texto a entero */
 static int convertir_entero(const char *texto, int *valor)
 {
     char *final;
@@ -37,231 +38,247 @@ static int convertir_entero(const char *texto, int *valor)
 
     if (errno != 0 || texto == final || *final != '\0' ||
         numero < 0 || numero > INT_MAX)
-    {
         return -1;
-    }
 
     *valor = (int)numero;
-
     return 0;
 }
 
-/* Convertir texto a número decimal */
+/* Convertir texto a decimal */
 static int convertir_decimal(const char *texto, double *valor)
 {
     char *final;
 
+    if (texto == NULL || texto[0] == '\0')
+        return -1;
+
     errno = 0;
     *valor = strtod(texto, &final);
 
-    if (errno != 0 || texto == final || *final != '\0')
-    {
+    if (errno != 0 || texto == final || *final != '\0' ||
+        !isfinite(*valor))
         return -1;
-    }
 
     return 0;
 }
 
-/* Procesar una línea recibida del servidor */
+/* Separar una línea CSV conservando los campos vacíos */
+static int separar_csv(char *linea, char *campos[], int cantidad)
+{
+    int total = 0;
+    char *inicio = linea;
+
+    for (char *actual = linea; ; actual++)
+    {
+        if (*actual == ',' || *actual == '\0')
+        {
+            if (total >= cantidad)
+                return -1;
+
+            campos[total++] = inicio;
+
+            if (*actual == '\0')
+                break;
+
+            *actual = '\0';
+            inicio = actual + 1;
+        }
+    }
+
+    return total == cantidad ? 0 : -1;
+}
+
+/* Procesar una lectura CSV */
 static int procesar_lectura(char *linea, DatosLectura *lectura)
 {
     char *campos[7];
 
-    campos[0] = linea;
-
-    /* Separar los siete campos mediante comas */
-    for (int i = 0; i < 6; i++)
-    {
-        char *separador = strchr(campos[i], ',');
-
-        if (separador == NULL)
-            return -1;
-
-        *separador = '\0';
-        campos[i + 1] = separador + 1;
-    }
-
-    /* Comprobar que no existan campos adicionales */
-    if (strchr(campos[6], ',') != NULL)
+    if (separar_csv(linea, campos, 7) != 0)
         return -1;
 
-    /* Comprobar que ningún campo esté vacío */
-    for (int i = 0; i < 7; i++)
-    {
-        if (campos[i][0] == '\0')
-            return -1;
-    }
+    memset(lectura, 0, sizeof(*lectura));
 
-    /* Validar los tamaños de los campos de texto */
-    if (strlen(campos[1]) >= sizeof(lectura->maquina) ||
+    if (convertir_entero(campos[0], &lectura->id) != 0 ||
+        lectura->id <= 0)
+        return -1;
+
+    if (campos[1][0] == '\0' ||
+        campos[2][0] == '\0' ||
+        strlen(campos[1]) >= sizeof(lectura->maquina) ||
         strlen(campos[2]) >= sizeof(lectura->ts) ||
         strlen(campos[6]) >= sizeof(lectura->estado))
-    {
         return -1;
-    }
 
-    /* Convertir los campos numéricos */
-    if (convertir_entero(campos[0], &lectura->id) != 0 ||
-        convertir_decimal(campos[3], &lectura->temp) != 0 ||
-        convertir_decimal(campos[4], &lectura->corriente) != 0 ||
-        convertir_decimal(campos[5], &lectura->vibracion) != 0)
-    {
-        return -1;
-    }
-
-    /* Copiar los campos de texto */
     strcpy(lectura->maquina, campos[1]);
     strcpy(lectura->ts, campos[2]);
     strcpy(lectura->estado, campos[6]);
 
+    lectura->tiene_temp =
+        convertir_decimal(campos[3], &lectura->temp) == 0;
+
+    lectura->tiene_corriente =
+        convertir_decimal(campos[4], &lectura->corriente) == 0;
+
+    lectura->tiene_vibracion =
+        convertir_decimal(campos[5], &lectura->vibracion) == 0;
+
     return 0;
 }
 
-/* Descargar y almacenar la configuración del servidor */
+/* Eliminar espacios al inicio y final de una línea */
+static void limpiar_linea(char *linea)
+{
+    size_t longitud = strlen(linea);
+
+    while (longitud > 0 &&
+           (linea[longitud - 1] == '\r' ||
+            isspace((unsigned char)linea[longitud - 1])))
+    {
+        linea[--longitud] = '\0';
+    }
+
+    size_t inicio = 0;
+
+    while (linea[inicio] != '\0' &&
+           isspace((unsigned char)linea[inicio]))
+        inicio++;
+
+    if (inicio > 0)
+        memmove(linea, linea + inicio, strlen(linea + inicio) + 1);
+}
+
+/* Descargar configuración */
 static int comando_config(void)
 {
     sqlite3 *db = NULL;
     RedRespuesta respuesta = {0};
-
-    int resultado = 1;
     int red_iniciada = 0;
+    int resultado = 1;
 
-    /* Abrir la base de datos local */
     if (datos_abrir(&db) != 0)
         goto finalizar;
 
-    /* Crear las tablas necesarias */
     if (datos_inicializar(db) != 0)
         goto finalizar;
 
-    /* Inicializar libcurl */
     if (red_inicializar() != 0)
         goto finalizar;
 
     red_iniciada = 1;
 
-    /* Solicitar la configuración al servidor */
     printf("Solicitando configuración al servidor...\n");
 
-    if (red_get("/api/v1/config", &respuesta) != 0)
-    {
-        fprintf(stderr, "No se pudo descargar la configuración.\n");
+    if (red_get("/api/v1/config", &respuesta) != 0 ||
+        respuesta.contenido == NULL)
         goto finalizar;
-    }
-
-    /* Comprobar que exista contenido */
-    if (respuesta.contenido == NULL)
-    {
-        fprintf(stderr, "El servidor no devolvió una configuración.\n");
-        goto finalizar;
-    }
-
-    /* Procesar los parámetros recibidos */
-    char *linea = strtok(respuesta.contenido, "\n");
 
     int parametros = 0;
+    char *linea = strtok(respuesta.contenido, "\n");
 
     while (linea != NULL)
     {
-        /* Buscar el separador entre clave y valor */
-        char *separador = strchr(linea, '=');
+        limpiar_linea(linea);
 
-        if (separador == NULL)
+        if (linea[0] != '\0')
         {
-            fprintf(stderr, "Error: parámetro de configuración inválido.\n");
-            goto finalizar;
+            char *separador = strchr(linea, '=');
+
+            if (separador == NULL)
+                goto finalizar;
+
+            *separador = '\0';
+
+            if (linea[0] == '\0' || separador[1] == '\0')
+                goto finalizar;
+
+            if (datos_config_guardar(db, linea, separador + 1) != 0)
+                goto finalizar;
+
+            parametros++;
         }
-
-        /* Separar la clave del valor */
-        *separador = '\0';
-
-        const char *clave = linea;
-        const char *valor = separador + 1;
-
-        /* Comprobar que ambos campos tengan contenido */
-        if (clave[0] == '\0' || valor[0] == '\0')
-        {
-            fprintf(stderr, "Error: clave o valor vacío.\n");
-            goto finalizar;
-        }
-
-        /* Guardar el parámetro en SQLite */
-        if (datos_config_guardar(db, clave, valor) != 0)
-        {
-            fprintf(stderr, "Error al guardar el parámetro: %s\n", clave);
-            goto finalizar;
-        }
-
-        parametros++;
 
         linea = strtok(NULL, "\n");
     }
 
-    /* Comprobar que se recibieron los siete parámetros */
     if (parametros != 7)
     {
-        fprintf(stderr,
-                "Error: se esperaban 7 parámetros y se recibieron %d.\n",
+        fprintf(stderr, "Se esperaban 7 parámetros; recibidos: %d.\n",
                 parametros);
         goto finalizar;
     }
 
-    printf("\nConfiguración descargada y almacenada correctamente.\n");
-    printf("Parámetros guardados: %d\n", parametros);
+    char umbral[50];
+    char intervalo[50];
+    char hora[50];
+
+    if (datos_config_obtener(db, "umbral_temp", umbral, sizeof(umbral)) != 0 ||
+        datos_config_obtener(db, "intervalo_s", intervalo, sizeof(intervalo)) != 0 ||
+        datos_config_obtener(db, "hora", hora, sizeof(hora)) != 0)
+        goto finalizar;
+
+    printf("\nConfiguración almacenada correctamente.\n");
+    printf("Temperatura límite: %s\n", umbral);
+    printf("Intervalo: %s segundos\n", intervalo);
+    printf("Hora del servidor: %s\n", hora);
 
     resultado = 0;
 
 finalizar:
-
-    /* Liberar la respuesta HTTP */
     red_liberar_respuesta(&respuesta);
 
-    /* Finalizar libcurl si fue inicializado */
     if (red_iniciada)
         red_finalizar();
 
-    /* Cerrar la base de datos */
     datos_cerrar(db);
 
     return resultado;
 }
 
-/* Descargar y almacenar las lecturas de la planta */
+/* Descargar todas las lecturas */
 static int comando_descargar(void)
 {
     sqlite3 *db = NULL;
     RedRespuesta respuesta = {0};
 
-    int resultado = 1;
     int red_iniciada = 0;
-    int desde_id = 1;
-    int total_lecturas = 0;
+    int transaccion_activa = 0;
+    int resultado = 1;
 
-    char ruta[100];
+    int desde_id = 0;
+    int ultimo_id = -1;
+    int filas_unicas = 0;
 
-    /* Abrir la base de datos local */
+    long long suma_ids = 0;
+
+    char ruta[128];
+
     if (datos_abrir(&db) != 0)
         goto finalizar;
 
-    /* Crear las tablas necesarias */
     if (datos_inicializar(db) != 0)
         goto finalizar;
 
-    /* Inicializar libcurl */
     if (red_inicializar() != 0)
         goto finalizar;
 
     red_iniciada = 1;
 
+    if (datos_transaccion_iniciar(db) != 0)
+    {
+        fprintf(stderr, "No se pudo iniciar la transacción.\n");
+        goto finalizar;
+    }
+
+    transaccion_activa = 1;
+
+    /* La descarga completa sustituye el conjunto anterior */
+    if (datos_lecturas_limpiar(db) != 0)
+        goto finalizar;
+
     printf("Iniciando descarga de lecturas...\n");
 
-    /* Descargar los registros por lotes */
     while (1)
     {
-        int cantidad_pagina = 0;
-        int ultimo_id = desde_id - 1;
-
-        /* Construir la ruta con los parámetros de paginación */
         int longitud = snprintf(
             ruta,
             sizeof(ruta),
@@ -271,32 +288,26 @@ static int comando_descargar(void)
         );
 
         if (longitud < 0 || (size_t)longitud >= sizeof(ruta))
-        {
-            fprintf(stderr, "Error al construir la solicitud.\n");
             goto finalizar;
-        }
 
-        /* Solicitar las lecturas al servidor */
         if (red_get(ruta, &respuesta) != 0)
         {
-            fprintf(stderr, "Error al descargar las lecturas.\n");
+            fprintf(stderr, "Error al descargar lecturas.\n");
             goto finalizar;
         }
 
-        /* Comprobar si existen registros */
-        if (respuesta.contenido == NULL ||
-            respuesta.longitud == 0)
-        {
-            red_liberar_respuesta(&respuesta);
-            break;
-        }
+        if (respuesta.contenido == NULL)
+            goto finalizar;
+
+        int cantidad_pagina = 0;
+        int nuevo_ultimo_id = ultimo_id;
 
         char *linea = respuesta.contenido;
+        char *siguiente;
 
-        /* Procesar cada registro recibido */
-        while (linea != NULL && *linea != '\0')
+        while (linea != NULL)
         {
-            char *siguiente = strchr(linea, '\n');
+            siguiente = strchr(linea, '\n');
 
             if (siguiente != NULL)
             {
@@ -304,139 +315,139 @@ static int comando_descargar(void)
                 siguiente++;
             }
 
-            /* Eliminar retorno de carro si existe */
-            size_t longitud_linea = strlen(linea);
+            limpiar_linea(linea);
 
-            if (longitud_linea > 0 &&
-                linea[longitud_linea - 1] == '\r')
-            {
-                linea[longitud_linea - 1] = '\0';
-            }
-
-            /* Ignorar líneas vacías */
             if (linea[0] != '\0')
             {
-                DatosLectura lectura = {0};
-
-                /* Validar y procesar el registro */
-                if (procesar_lectura(linea, &lectura) != 0)
+                /* Ignorar el encabezado CSV */
+                if (strncmp(linea, "id,", 3) != 0)
                 {
-                    fprintf(stderr, "Error: lectura recibida inválida.\n");
-                    red_liberar_respuesta(&respuesta);
-                    goto finalizar;
-                }
+                    DatosLectura lectura = {0};
 
-                /* Comprobar el orden de los identificadores */
-                if (lectura.id < desde_id ||
-                    lectura.id <= ultimo_id)
-                {
-                    fprintf(stderr, "Error: identificador de lectura inválido.\n");
-                    red_liberar_respuesta(&respuesta);
-                    goto finalizar;
-                }
+                    if (procesar_lectura(linea, &lectura) != 0)
+                    {
+                        fprintf(stderr, "Registro CSV inválido.\n");
+                        goto finalizar;
+                    }
 
-                /* Guardar la lectura en SQLite */
-                if (datos_lectura_guardar(db, &lectura) != 0)
-                {
-                    fprintf(stderr, "Error al almacenar una lectura.\n");
-                    red_liberar_respuesta(&respuesta);
-                    goto finalizar;
-                }
+                    /* Validar el orden de los identificadores */
+                    if (lectura.id < desde_id ||
+                        (cantidad_pagina > 0 &&
+                         lectura.id <= nuevo_ultimo_id))
+                    {
+                        fprintf(stderr, "Orden de identificadores inválido.\n");
+                        goto finalizar;
+                    }
 
-                ultimo_id = lectura.id;
-                cantidad_pagina++;
-                total_lecturas++;
+                    if (datos_lectura_guardar(db, &lectura) != 0)
+                        goto finalizar;
+
+                    nuevo_ultimo_id = lectura.id;
+                    cantidad_pagina++;
+                }
             }
 
             linea = siguiente;
         }
 
-        /* Liberar la respuesta del servidor */
         red_liberar_respuesta(&respuesta);
 
-        printf("Lote procesado: %d lecturas.\n", cantidad_pagina);
+        printf("Página recibida: %d lecturas.\n", cantidad_pagina);
 
-        /* Si no hay más registros, finalizar */
-        if (cantidad_pagina == 0 ||
-            cantidad_pagina < LOTE_DESCARGA)
-        {
+        if (cantidad_pagina == 0 || cantidad_pagina < LOTE_DESCARGA)
             break;
-        }
 
-        /* Preparar el identificador para el siguiente lote */
-        if (ultimo_id == INT_MAX)
+        if (nuevo_ultimo_id <= ultimo_id ||
+            nuevo_ultimo_id == INT_MAX)
         {
-            fprintf(stderr, "Error: se alcanzó el límite de identificadores.\n");
+            fprintf(stderr, "La paginación no avanzó correctamente.\n");
             goto finalizar;
         }
 
-        desde_id = ultimo_id + 1;
+        ultimo_id = nuevo_ultimo_id;
+        desde_id = ultimo_id;
     }
 
-    printf("\nDescarga completada.\n");
-    printf("Lecturas procesadas: %d\n", total_lecturas);
+    if (datos_lecturas_resumen(db, &filas_unicas, &suma_ids) != 0)
+        goto finalizar;
+
+    if (datos_transaccion_confirmar(db) != 0)
+    {
+        fprintf(stderr, "No se pudo confirmar la descarga.\n");
+        goto finalizar;
+    }
+
+    transaccion_activa = 0;
+
+    printf("\nDescarga almacenada correctamente.\n");
+    printf("Filas únicas: %d\n", filas_unicas);
+    printf("Suma de IDs: %lld\n", suma_ids);
+
+    char json[160];
+
+    int longitud_json = snprintf(
+        json,
+        sizeof(json),
+        "{\"filas_unicas\":%d,\"suma_ids\":%lld}",
+        filas_unicas,
+        suma_ids
+    );
+
+    if (longitud_json < 0 ||
+        (size_t)longitud_json >= sizeof(json))
+        goto finalizar;
+
+    if (red_post(
+            "/api/v1/respuestas/descarga",
+            json,
+            &respuesta) != 0)
+    {
+        fprintf(stderr, "No se pudo enviar el resultado de descarga.\n");
+        goto finalizar;
+    }
+
+    printf("Resultado enviado al servidor correctamente.\n");
 
     resultado = 0;
 
 finalizar:
-
-    /* Liberar cualquier respuesta pendiente */
     red_liberar_respuesta(&respuesta);
 
-    /* Finalizar libcurl si fue inicializado */
+    if (transaccion_activa)
+        datos_transaccion_cancelar(db);
+
     if (red_iniciada)
         red_finalizar();
 
-    /* Cerrar la base de datos */
     datos_cerrar(db);
 
     return resultado;
 }
 
-/* Función principal del programa */
+/* Programa principal */
 int main(int argc, char *argv[])
 {
-    /* Validar que se haya proporcionado exactamente un comando */
     if (argc != 2)
     {
         printf("Uso: estacion <comando>\n");
-        printf("Comandos disponibles:\n");
-        printf("  config\n");
-        printf("  descargar\n");
-        printf("  analizar\n");
-        printf("  enviar\n");
-        printf("  escuchar\n");
-
+        printf("Comandos: config, descargar, analizar, enviar, escuchar\n");
         return 1;
     }
 
-    /* Identificar y procesar el comando solicitado */
     if (strcmp(argv[1], "config") == 0)
-    {
         return comando_config();
-    }
-    else if (strcmp(argv[1], "descargar") == 0)
-    {
+
+    if (strcmp(argv[1], "descargar") == 0)
         return comando_descargar();
-    }
-    else if (strcmp(argv[1], "analizar") == 0)
+
+    if (strcmp(argv[1], "analizar") == 0 ||
+        strcmp(argv[1], "enviar") == 0 ||
+        strcmp(argv[1], "escuchar") == 0)
     {
-        printf("Comando seleccionado: analizar\n");
-    }
-    else if (strcmp(argv[1], "enviar") == 0)
-    {
-        printf("Comando seleccionado: enviar\n");
-    }
-    else if (strcmp(argv[1], "escuchar") == 0)
-    {
-        printf("Comando seleccionado: escuchar\n");
-    }
-    else
-    {
-        /* Informar si el comando introducido no existe */
-        printf("Error: comando desconocido.\n");
-        return 1;
+        printf("Comando seleccionado: %s\n", argv[1]);
+        return 0;
     }
 
-    return 0;
+    fprintf(stderr, "Comando desconocido.\n");
+    return 1;
 }

@@ -1,38 +1,49 @@
 
 /* MÓDULO DE ALMACENAMIENTO */
-
-/* Protección contra inclusiones múltiples */
 #ifndef DATOS_H
 #define DATOS_H
 
-/* Biblioteca de SQLite */
 #include "sqlite3.h"
-
-/* Biblioteca para manejar tamaños */
 #include <stddef.h>
 
-/* Estructura para representar una lectura de la planta */
+/* Estructura para representar una lectura */
 typedef struct
 {
     int id;
     char maquina[50];
     char ts[30];
+
     double temp;
     double corriente;
     double vibracion;
+
     char estado[20];
+
+    /* Indican si los campos numéricos están presentes */
+    int tiene_temp;
+    int tiene_corriente;
+    int tiene_vibracion;
+
 } DatosLectura;
 
-/* Funciones generales del módulo */
+/* Funciones generales */
 int datos_abrir(sqlite3 **db);
 void datos_cerrar(sqlite3 *db);
 int datos_inicializar(sqlite3 *db);
 
-/* Funciones para gestionar la configuración */
-int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor);
-int datos_config_obtener(sqlite3 *db, const char *clave, char *valor, size_t capacidad);
+/* Gestión de transacciones */
+int datos_transaccion_iniciar(sqlite3 *db);
+int datos_transaccion_confirmar(sqlite3 *db);
+int datos_transaccion_cancelar(sqlite3 *db);
 
-/* Funciones para gestionar las lecturas de la planta */
+/* Configuración */
+int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor);
+int datos_config_obtener(sqlite3 *db, const char *clave,
+                         char *valor, size_t capacidad);
+
+/* Lecturas */
 int datos_lectura_guardar(sqlite3 *db, const DatosLectura *lectura);
+int datos_lecturas_limpiar(sqlite3 *db);
+int datos_lecturas_resumen(sqlite3 *db, int *cantidad, long long *suma_ids);
 
 #endif
