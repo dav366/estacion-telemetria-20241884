@@ -1,5 +1,6 @@
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 import json
 
 TOKEN_PRUEBA = "token-prueba-local"
@@ -22,15 +23,18 @@ class ServidorPrueba(BaseHTTPRequestHandler):
 
     def do_GET(self):
 
-        if self.path == "/api/v1/ping":
+        ruta = urlparse(self.path)
+        parametros = parse_qs(ruta.query)
+
+        if ruta.path == "/api/v1/ping":
             self.responder(200, "estado=activo")
             return
 
-        if self.path == "/api/v1/config":
+        if not self.autenticar():
+            self.responder(401, "error=autenticacion")
+            return
 
-            if not self.autenticar():
-                self.responder(401, "error=autenticacion")
-                return
+        if ruta.path == "/api/v1/config":
 
             configuracion = (
                 "matricula=20241884\n"
@@ -43,6 +47,40 @@ class ServidorPrueba(BaseHTTPRequestHandler):
             )
 
             self.responder(200, configuracion)
+            return
+
+        if ruta.path == "/api/v1/lecturas":
+
+            lecturas = [
+                "1,MOTOR,2026-11-25 10:00:00,45.5,2.1,0.3,OK",
+                "2,BOMBA,2026-11-25 10:00:10,48.2,2.4,0.5,OK",
+                "3,MOTOR,2026-11-25 10:00:20,76.0,3.1,1.2,ALARMA",
+                "4,VALVULA,2026-11-25 10:00:30,52.0,1.8,0.4,OK",
+                "5,BOMBA,2026-11-25 10:00:40,81.5,3.5,1.4,ALARMA"
+            ]
+
+            try:
+                desde_id = int(parametros.get("desde_id", ["0"])[0])
+                limite = int(parametros.get("limite", ["200"])[0])
+
+                if desde_id < 0 or limite < 1:
+                    raise ValueError
+
+            except (ValueError, TypeError):
+                self.responder(400, "error=parametros_invalidos")
+                return
+
+            resultado = []
+
+            for lectura in lecturas:
+                identificador = int(lectura.split(",", 1)[0])
+
+                if identificador >= desde_id:
+                    resultado.append(lectura)
+
+            resultado = resultado[:limite]
+
+            self.responder(200, "\n".join(resultado))
             return
 
         self.responder(404, "error=no_encontrado")
