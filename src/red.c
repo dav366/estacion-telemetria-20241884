@@ -38,7 +38,7 @@ void red_finalizar(void)
 /* Liberar la memoria de una respuesta HTTP */
 void red_liberar_respuesta(RedRespuesta *respuesta)
 {
-    /* Comprobar que el puntero recibido sea valido */
+    /* Comprobar que el puntero recibido sea válido */
     if (respuesta == NULL)
     {
         return;
@@ -57,16 +57,16 @@ void red_liberar_respuesta(RedRespuesta *respuesta)
 static size_t red_recibir_datos(void *datos, size_t tamano,
                                 size_t cantidad, void *usuario)
 {
-    /* Obtener la estructura donde se almacenara la respuesta */
+    /* Obtener la estructura donde se almacenará la respuesta */
     RedRespuesta *respuesta = (RedRespuesta *)usuario;
 
-    /* Comprobar que la estructura sea valida */
+    /* Comprobar que la estructura sea válida */
     if (respuesta == NULL)
     {
         return 0;
     }
 
-    /* Comprobar que la multiplicacion no provoque un desbordamiento */
+    /* Comprobar que la multiplicación no provoque un desbordamiento */
     if (tamano != 0 && cantidad > (size_t)-1 / tamano)
     {
         return 0;
@@ -121,13 +121,20 @@ static size_t red_recibir_datos(void *datos, size_t tamano,
     /* Agregar el terminador de cadena */
     respuesta->contenido[respuesta->longitud] = '\0';
 
-    /* Informar a libcurl cuantos bytes fueron procesados */
+    /* Informar a libcurl cuántos bytes fueron procesados */
     return bytes;
 }
 
 /* Preparar un manejador para solicitudes HTTP */
 static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
 {
+    /* Comprobar que la estructura de respuesta sea válida */
+    if (respuesta == NULL)
+    {
+        fprintf(stderr, "Error: estructura de respuesta no válida\n");
+        return NULL;
+    }
+
     /* Crear el manejador de la solicitud */
     CURL *curl = curl_easy_init();
 
@@ -138,18 +145,18 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
         return NULL;
     }
 
-    /* Configurar la funcion que recibira los datos del servidor */
+    /* Configurar la función que recibirá los datos del servidor */
     CURLcode resultado = curl_easy_setopt(
         curl, CURLOPT_WRITEFUNCTION, red_recibir_datos
     );
 
-    /* Comprobar la configuracion */
+    /* Comprobar la configuración */
     if (resultado != CURLE_OK)
     {
         goto error;
     }
 
-    /* Indicar donde se almacenara la respuesta */
+    /* Indicar dónde se almacenará la respuesta */
     resultado = curl_easy_setopt(
         curl, CURLOPT_WRITEDATA, respuesta
     );
@@ -159,7 +166,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
         goto error;
     }
 
-    /* Configurar el tiempo maximo de espera */
+    /* Configurar el tiempo máximo de espera */
     resultado = curl_easy_setopt(
         curl, CURLOPT_TIMEOUT, 5L
     );
@@ -169,7 +176,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
         goto error;
     }
 
-    /* Configurar el identificador de nuestra aplicacion */
+    /* Configurar el identificador de nuestra aplicación */
     resultado = curl_easy_setopt(
         curl, CURLOPT_USERAGENT, "estacion-itla/1.0"
     );
@@ -183,7 +190,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
 
 error:
 
-    /* Informar el error de configuracion */
+    /* Informar el error de configuración */
     fprintf(stderr, "Error al configurar la solicitud HTTP: %s\n",
             curl_easy_strerror(resultado));
 
@@ -191,4 +198,56 @@ error:
     curl_easy_cleanup(curl);
 
     return NULL;
+}
+
+/* Construir la URL de una solicitud HTTP */
+static char *red_construir_url(const char *ruta)
+{
+    /* Obtener la dirección del servidor desde el entorno */
+    const char *host = getenv("ITLA_HOST");
+
+    /* Comprobar que el servidor y la ruta sean válidos */
+    if (host == NULL || host[0] == '\0' ||
+        ruta == NULL || ruta[0] != '/')
+    {
+        fprintf(stderr, "Error: servidor o ruta no válidos\n");
+        return NULL;
+    }
+
+    /* Calcular el espacio necesario para construir la URL */
+    int longitud = snprintf(
+        NULL,
+        0,
+        "http://%s:4000%s",
+        host,
+        ruta
+    );
+
+    /* Comprobar si se pudo calcular la longitud */
+    if (longitud < 0)
+    {
+        fprintf(stderr, "Error al calcular la longitud de la URL\n");
+        return NULL;
+    }
+
+    /* Reservar memoria para almacenar la URL */
+    char *url = malloc((size_t)longitud + 1);
+
+    /* Comprobar si se pudo reservar la memoria */
+    if (url == NULL)
+    {
+        fprintf(stderr, "Error al reservar memoria para la URL\n");
+        return NULL;
+    }
+
+    /* Construir la URL completa */
+    snprintf(
+        url,
+        (size_t)longitud + 1,
+        "http://%s:4000%s",
+        host,
+        ruta
+    );
+
+    return url;
 }
