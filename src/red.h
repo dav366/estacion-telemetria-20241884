@@ -45,4 +45,10 @@ int red_cliente_post(
     RedRespuesta *respuesta
 );
 
+/* Publicación de mensajes mediante MQTT */
+int red_mqtt_publicar(
+    const char *topico,
+    const char *mensaje
+);
+
 #endif

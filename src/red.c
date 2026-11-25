@@ -708,3 +708,150 @@ error:
 
     return 1;
 }
+
+/* Publicar un mensaje mediante MQTT */
+int red_mqtt_publicar(
+    const char *topico,
+    const char *mensaje
+)
+{
+    const char *host = getenv("ITLA_HOST");
+    const char *matricula = getenv("ITLA_MATRICULA");
+    const char *token = getenv("ITLA_TOKEN");
+
+    if (host == NULL || host[0] == '\0' ||
+        matricula == NULL || matricula[0] == '\0' ||
+        token == NULL || token[0] == '\0' ||
+        topico == NULL || topico[0] == '\0' ||
+        mensaje == NULL || mensaje[0] == '\0')
+    {
+        fprintf(stderr, "Error: configuración MQTT incompleta.\n");
+        return 1;
+    }
+
+    if (strchr(host, '\r') != NULL ||
+        strchr(host, '\n') != NULL ||
+        strchr(host, '/') != NULL ||
+        strchr(matricula, '\r') != NULL ||
+        strchr(matricula, '\n') != NULL ||
+        strchr(token, '\r') != NULL ||
+        strchr(token, '\n') != NULL ||
+        strchr(topico, '\r') != NULL ||
+        strchr(topico, '\n') != NULL ||
+        strchr(topico, ' ') != NULL)
+    {
+        fprintf(stderr, "Error: configuración MQTT no válida.\n");
+        return 1;
+    }
+
+    int longitud = snprintf(
+        NULL, 0, "mqtt://%s:1883/%s", host, topico
+    );
+
+    if (longitud < 0)
+        return 1;
+
+    char *url = malloc((size_t)longitud + 1);
+
+    if (url == NULL)
+        return 1;
+
+    snprintf(
+        url,
+        (size_t)longitud + 1,
+        "mqtt://%s:1883/%s",
+        host,
+        topico
+    );
+
+    CURL *curl = curl_easy_init();
+
+    if (curl == NULL)
+    {
+        free(url);
+        return 1;
+    }
+
+    CURLcode resultado;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_URL, url
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_USERNAME, matricula
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_PASSWORD, token
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_POSTFIELDS, mensaje
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl,
+        CURLOPT_POSTFIELDSIZE_LARGE,
+        (curl_off_t)strlen(mensaje)
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_CONNECTTIMEOUT, 3L
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_TIMEOUT, 5L
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_NOSIGNAL, 1L
+    );
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    resultado = curl_easy_perform(curl);
+
+    if (resultado != CURLE_OK)
+        goto error_mqtt;
+
+    curl_easy_cleanup(curl);
+    free(url);
+
+    return 0;
+
+error_mqtt:
+
+    fprintf(
+        stderr,
+        "Error al publicar mensaje MQTT: %s\n",
+        curl_easy_strerror(resultado)
+    );
+
+    curl_easy_cleanup(curl);
+    free(url);
+
+    return 1;
+}

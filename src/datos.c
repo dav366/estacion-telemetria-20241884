@@ -804,3 +804,46 @@ error:
 
     return 1;
 }
+
+/* Obtener la última secuencia registrada */
+int datos_telemetria_obtener_ultima_seq(
+    sqlite3 *db,
+    long long *seq
+)
+{
+    if (db == NULL || seq == NULL)
+        return 1;
+
+    const char *sql =
+        "SELECT COALESCE(MAX(seq), 0) FROM telemetria;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    resultado = sqlite3_step(consulta);
+
+    if (resultado != SQLITE_ROW)
+        goto error;
+
+    *seq = sqlite3_column_int64(consulta, 0);
+
+    sqlite3_finalize(consulta);
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al obtener la última secuencia: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}

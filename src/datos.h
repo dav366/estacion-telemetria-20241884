@@ -108,4 +108,6 @@ int datos_telemetria_incrementar_intentos(
     long long seq
 );
 
+int datos_telemetria_obtener_ultima_seq(sqlite3 *db, long long *seq);
+
 #endif

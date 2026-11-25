@@ -678,17 +678,48 @@ static int comando_enviar(void)
     char texto_intervalo[50];
     int intervalo_s = 0;
 
+    const char *matricula = getenv("ITLA_MATRICULA");
+    char topico[256];
+    char mensaje[100];
+
     int nivel_reintento = 1;
+
     long long proximo_envio = 0;
     long long proxima_lectura = 0;
+    long long proximo_latido = 0;
+    long long ultima_seq = 0;
 
     struct sigaction accion_anterior;
     struct sigaction accion;
+
+    if (matricula == NULL || matricula[0] == '\0')
+    {
+        fprintf(stderr, "Falta configurar ITLA_MATRICULA.\n");
+        goto finalizar;
+    }
+
+    int longitud_topico = snprintf(
+        topico,
+        sizeof(topico),
+        "itla/estudiantes/%s/latido",
+        matricula
+    );
+
+    if (longitud_topico < 0 ||
+        (size_t)longitud_topico >= sizeof(topico))
+    {
+        fprintf(stderr, "El tópico MQTT es demasiado largo.\n");
+        goto finalizar;
+    }
 
     if (datos_abrir(&db) != 0)
         goto finalizar;
 
     if (datos_inicializar(db) != 0)
+        goto finalizar;
+
+    if (datos_telemetria_obtener_ultima_seq(
+            db, &ultima_seq) != 0)
         goto finalizar;
 
     if (datos_config_obtener(
@@ -721,7 +752,6 @@ static int comando_enviar(void)
 
     sensor_inicializar();
 
-    /* Configurar la interrupción con Ctrl+C */
     memset(&accion, 0, sizeof(accion));
     accion.sa_handler = manejar_interrupcion;
     sigemptyset(&accion.sa_mask);
@@ -739,9 +769,11 @@ static int comando_enviar(void)
 
     proxima_lectura = ahora;
     proximo_envio = ahora;
+    proximo_latido = ahora;
 
     printf("\nESTACIÓN DE TELEMETRÍA INICIADA\n");
     printf("Intervalo de lectura: %d segundos\n", intervalo_s);
+    printf("Latido MQTT: cada 10 segundos\n");
     printf("Las lecturas se almacenan antes de enviarse.\n");
     printf("Presione Ctrl+C para detener el proceso.\n\n");
 
@@ -755,7 +787,7 @@ static int comando_enviar(void)
             break;
         }
 
-        /* Generar una nueva lectura cuando corresponda */
+        /* Generar y guardar una lectura */
         if (ahora >= proxima_lectura)
         {
             DatosTelemetria lectura = {0};
@@ -775,12 +807,13 @@ static int comando_enviar(void)
                 &lectura.corriente
             );
 
-            /* Guardar primero en SQLite */
             if (datos_telemetria_guardar(db, &lectura) != 0)
             {
                 fprintf(stderr, "No se pudo guardar la lectura.\n");
                 break;
             }
+
+            ultima_seq = lectura.seq;
 
             printf(
                 "Lectura guardada | seq=%lld | temp=%.2f °C | corriente=%.2f A\n",
@@ -789,10 +822,67 @@ static int comando_enviar(void)
                 lectura.corriente
             );
 
-            proxima_lectura = ahora + (long long)intervalo_s * 1000LL;
+            proxima_lectura =
+                ahora + (long long)intervalo_s * 1000LL;
         }
 
-        /* Intentar enviar cuando se cumpla el tiempo de espera */
+        /* Publicar el latido MQTT cada 10 segundos */
+        if (ahora >= proximo_latido)
+        {
+            int pendientes = 0;
+
+            if (datos_telemetria_contar_pendientes(
+                    db, &pendientes) != 0)
+            {
+                fprintf(stderr,
+                        "No se pudo contar la telemetría pendiente para el latido.\n");
+            }
+            else
+            {
+                time_t instante = time(NULL);
+
+                if (instante == (time_t)-1)
+                {
+                    fprintf(stderr,
+                            "No se pudo obtener la hora del latido.\n");
+                }
+                else
+                {
+                    int longitud = snprintf(
+                        mensaje,
+                        sizeof(mensaje),
+                        "LATIDO;%lld;%d;%lld\n",
+                        ultima_seq,
+                        pendientes,
+                        (long long)instante
+                    );
+
+                    if (longitud < 0 ||
+                        (size_t)longitud >= sizeof(mensaje))
+                    {
+                        fprintf(stderr,
+                                "No se pudo construir el mensaje MQTT.\n");
+                    }
+                    else if (red_mqtt_publicar(topico, mensaje) != 0)
+                    {
+                        fprintf(stderr,
+                                "Latido MQTT descartado; continúa el envío HTTP.\n");
+                    }
+                    else
+                    {
+                        printf(
+                            "Latido MQTT publicado | seq=%lld | pendientes=%d\n",
+                            ultima_seq,
+                            pendientes
+                        );
+                    }
+                }
+            }
+
+            proximo_latido = ahora + 10000LL;
+        }
+
+        /* Envío HTTP de la telemetría pendiente */
         if (ahora >= proximo_envio)
         {
             DatosTelemetria pendiente = {0};
@@ -803,7 +893,8 @@ static int comando_enviar(void)
 
             if (estado < 0)
             {
-                fprintf(stderr, "Error al consultar la cola de telemetría.\n");
+                fprintf(stderr,
+                        "Error al consultar la cola de telemetría.\n");
                 break;
             }
 
@@ -829,11 +920,11 @@ static int comando_enviar(void)
                     break;
                 }
 
-                /* Registrar el intento antes de realizar la solicitud */
                 if (datos_telemetria_incrementar_intentos(
                         db, pendiente.seq) != 0)
                 {
-                    fprintf(stderr, "No se pudo registrar el intento.\n");
+                    fprintf(stderr,
+                            "No se pudo registrar el intento.\n");
                     break;
                 }
 
@@ -848,7 +939,8 @@ static int comando_enviar(void)
 
                 if (error_red != 0)
                 {
-                    int espera = calcular_reintento(nivel_reintento);
+                    int espera =
+                        calcular_reintento(nivel_reintento);
 
                     printf(
                         "Error de conexión. Reintentando en %d segundos.\n",
@@ -858,18 +950,19 @@ static int comando_enviar(void)
                     if (nivel_reintento < 6)
                         nivel_reintento++;
 
-                    proximo_envio = ahora + (long long)espera * 1000LL;
+                    proximo_envio =
+                        ahora + (long long)espera * 1000LL;
 
                     red_liberar_respuesta(&respuesta);
                 }
                 else if (respuesta.codigo_http == 200 ||
                          respuesta.codigo_http == 201)
                 {
-                    /* Confirmar en SQLite solamente después de aceptar */
                     if (datos_telemetria_marcar_enviada(
                             db, pendiente.seq) != 0)
                     {
-                        fprintf(stderr, "No se pudo actualizar el estado enviado.\n");
+                        fprintf(stderr,
+                                "No se pudo actualizar el estado enviado.\n");
                         red_liberar_respuesta(&respuesta);
                         break;
                     }
@@ -881,7 +974,8 @@ static int comando_enviar(void)
                     );
 
                     nivel_reintento = 1;
-                    proximo_envio = ahora + INTERVALO_ENVIO_MS;
+                    proximo_envio =
+                        ahora + INTERVALO_ENVIO_MS;
 
                     red_liberar_respuesta(&respuesta);
                 }
@@ -897,7 +991,8 @@ static int comando_enviar(void)
                     }
                     else
                     {
-                        espera = calcular_reintento(nivel_reintento);
+                        espera =
+                            calcular_reintento(nivel_reintento);
 
                         if (nivel_reintento < 6)
                             nivel_reintento++;
@@ -910,7 +1005,8 @@ static int comando_enviar(void)
                         espera
                     );
 
-                    proximo_envio = ahora + (long long)espera * 1000LL;
+                    proximo_envio =
+                        ahora + (long long)espera * 1000LL;
 
                     red_liberar_respuesta(&respuesta);
                 }
@@ -929,8 +1025,8 @@ static int comando_enviar(void)
             }
             else
             {
-                /* No hay pendientes; revisar nuevamente después */
-                proximo_envio = ahora + INTERVALO_ENVIO_MS;
+                proximo_envio =
+                    ahora + INTERVALO_ENVIO_MS;
             }
         }
 
