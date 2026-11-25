@@ -252,7 +252,6 @@ static char *red_construir_url(const char *ruta)
     return url;
 }
 
-
 /* Realizar una solicitud HTTP GET */
 int red_get(const char *ruta, RedRespuesta *respuesta)
 {
@@ -263,10 +262,8 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
         return 1;
     }
 
-    /* Inicializar los valores de la respuesta */
-    respuesta->contenido = NULL;
-    respuesta->longitud = 0;
-    respuesta->codigo_http = 0;
+    /* Liberar cualquier respuesta anterior */
+    red_liberar_respuesta(respuesta);
 
     /* Construir la dirección del servidor */
     char *url = red_construir_url(ruta);
@@ -346,4 +343,140 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     }
 
     return 0;
+}
+
+/* Realizar una solicitud HTTP POST */
+int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
+{
+    /* Comprobar que los parámetros sean válidos */
+    if (ruta == NULL || json == NULL || respuesta == NULL)
+    {
+        fprintf(stderr, "Error: parámetros de solicitud POST no válidos\n");
+        return 1;
+    }
+
+    /* Liberar cualquier respuesta anterior */
+    red_liberar_respuesta(respuesta);
+
+    /* Construir la dirección del servidor */
+    char *url = red_construir_url(ruta);
+
+    if (url == NULL)
+    {
+        return 1;
+    }
+
+    /* Preparar el manejador HTTP */
+    CURL *curl = red_preparar_solicitud(respuesta);
+
+    if (curl == NULL)
+    {
+        free(url);
+        return 1;
+    }
+
+    /* Preparar las cabeceras de la solicitud */
+    struct curl_slist *cabeceras = NULL;
+
+    cabeceras = curl_slist_append(
+        cabeceras, "Content-Type: application/json"
+    );
+
+    if (cabeceras == NULL)
+    {
+        fprintf(stderr, "Error al preparar las cabeceras HTTP\n");
+        curl_easy_cleanup(curl);
+        free(url);
+        return 1;
+    }
+
+    /* Configurar la dirección de la solicitud */
+    CURLcode resultado = curl_easy_setopt(
+        curl, CURLOPT_URL, url
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Configurar las cabeceras HTTP */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_HTTPHEADER, cabeceras
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Configurar el contenido JSON que se enviará */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_POSTFIELDS, json
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Establecer el tamaño del contenido enviado */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)strlen(json)
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Ejecutar la solicitud HTTP */
+    resultado = curl_easy_perform(curl);
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Obtener el código de respuesta HTTP */
+    resultado = curl_easy_getinfo(
+        curl, CURLINFO_RESPONSE_CODE, &respuesta->codigo_http
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Liberar los recursos utilizados */
+    curl_slist_free_all(cabeceras);
+    curl_easy_cleanup(curl);
+    free(url);
+
+    /* Comprobar si el servidor respondió correctamente */
+    if (respuesta->codigo_http < 200 ||
+        respuesta->codigo_http >= 300)
+    {
+        fprintf(stderr, "Error: el servidor respondió con HTTP %ld\n",
+                respuesta->codigo_http);
+
+        red_liberar_respuesta(respuesta);
+        return 1;
+    }
+
+    return 0;
+
+error:
+
+    /* Informar el error de configuración o ejecución */
+    fprintf(stderr, "Error en la solicitud POST: %s\n",
+            curl_easy_strerror(resultado));
+
+    /* Liberar los recursos utilizados */
+    curl_slist_free_all(cabeceras);
+    curl_easy_cleanup(curl);
+    free(url);
+    red_liberar_respuesta(respuesta);
+
+    return 1;
 }
