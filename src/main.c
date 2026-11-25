@@ -1,4 +1,6 @@
 
+#define _POSIX_C_SOURCE 200809L
+
 /*****************************************************************************************************/
 /*           Programación para mecatrónicos                                                          */
 /* Nombre:    Omar David Guzmán Guerrero                                                             */
@@ -14,6 +16,7 @@
 
 #include "datos.h"
 #include "red.h"
+#include "sensor.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,9 +25,64 @@
 #include <limits.h>
 #include <math.h>
 #include <ctype.h>
+#include <signal.h>
+#include <time.h>
 
 #define LOTE_DESCARGA 200
 #define CANTIDAD_MAQUINAS 4
+#define INTERVALO_REVISION_MS 100
+#define INTERVALO_ENVIO_MS 250
+
+/* Variable para detener el envío de forma controlada */
+static volatile sig_atomic_t detener_envio = 0;
+
+/* Manejar la señal de interrupción */
+static void manejar_interrupcion(int senal)
+{
+    (void)senal;
+    detener_envio = 1;
+}
+
+/* Obtener tiempo monotónico en milisegundos */
+static long long obtener_tiempo_ms(void)
+{
+    struct timespec tiempo;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &tiempo) != 0)
+        return -1;
+
+    return (long long)tiempo.tv_sec * 1000LL
+         + (long long)tiempo.tv_nsec / 1000000LL;
+}
+
+/* Esperar una cantidad de milisegundos */
+static void esperar_ms(long milisegundos)
+{
+    struct timespec espera;
+
+    espera.tv_sec = milisegundos / 1000;
+    espera.tv_nsec = (milisegundos % 1000) * 1000000L;
+
+    while (nanosleep(&espera, &espera) != 0 && errno == EINTR)
+    {
+        if (detener_envio)
+            break;
+    }
+}
+
+/* Calcular espera exponencial con máximo de 30 segundos */
+static int calcular_reintento(int reintento)
+{
+    int espera = 1;
+
+    for (int i = 1; i < reintento && espera < 30; i++)
+        espera *= 2;
+
+    if (espera > 30)
+        espera = 30;
+
+    return espera;
+}
 
 /* Convertir texto a entero */
 static int convertir_entero(const char *texto, int *valor)
@@ -498,7 +556,6 @@ static int comando_analizar(void)
     {
         DatosAnalisis *dato = &analisis[i];
 
-        /* Validar los nombres antes de insertarlos en el JSON */
         for (size_t j = 0; dato->maquina[j] != '\0'; j++)
         {
             unsigned char caracter = (unsigned char)dato->maquina[j];
@@ -571,7 +628,6 @@ static int comando_analizar(void)
 
     printf("Análisis calculado correctamente.\n");
 
-    /* Inicializar la comunicación */
     if (red_inicializar() != 0)
         goto finalizar;
 
@@ -610,6 +666,293 @@ finalizar:
     return resultado;
 }
 
+/* Generar, almacenar y enviar telemetría */
+static int comando_enviar(void)
+{
+    sqlite3 *db = NULL;
+    RedCliente *cliente = NULL;
+
+    int red_iniciada = 0;
+    int resultado = 1;
+
+    char texto_intervalo[50];
+    int intervalo_s = 0;
+
+    int nivel_reintento = 1;
+    long long proximo_envio = 0;
+    long long proxima_lectura = 0;
+
+    struct sigaction accion_anterior;
+    struct sigaction accion;
+
+    if (datos_abrir(&db) != 0)
+        goto finalizar;
+
+    if (datos_inicializar(db) != 0)
+        goto finalizar;
+
+    if (datos_config_obtener(
+            db, "intervalo_s",
+            texto_intervalo, sizeof(texto_intervalo)) != 0)
+    {
+        fprintf(stderr, "No existe intervalo_s. Ejecute primero: estacion config\n");
+        goto finalizar;
+    }
+
+    if (convertir_entero(texto_intervalo, &intervalo_s) != 0 ||
+        intervalo_s <= 0)
+    {
+        fprintf(stderr, "El intervalo de envío no es válido.\n");
+        goto finalizar;
+    }
+
+    if (red_inicializar() != 0)
+        goto finalizar;
+
+    red_iniciada = 1;
+
+    cliente = red_cliente_crear();
+
+    if (cliente == NULL)
+    {
+        fprintf(stderr, "No se pudo crear el cliente HTTP.\n");
+        goto finalizar;
+    }
+
+    sensor_inicializar();
+
+    /* Configurar la interrupción con Ctrl+C */
+    memset(&accion, 0, sizeof(accion));
+    accion.sa_handler = manejar_interrupcion;
+    sigemptyset(&accion.sa_mask);
+
+    if (sigaction(SIGINT, &accion, &accion_anterior) != 0)
+    {
+        fprintf(stderr, "No se pudo configurar SIGINT.\n");
+        goto finalizar;
+    }
+
+    long long ahora = obtener_tiempo_ms();
+
+    if (ahora < 0)
+        goto finalizar;
+
+    proxima_lectura = ahora;
+    proximo_envio = ahora;
+
+    printf("\nESTACIÓN DE TELEMETRÍA INICIADA\n");
+    printf("Intervalo de lectura: %d segundos\n", intervalo_s);
+    printf("Las lecturas se almacenan antes de enviarse.\n");
+    printf("Presione Ctrl+C para detener el proceso.\n\n");
+
+    while (!detener_envio)
+    {
+        ahora = obtener_tiempo_ms();
+
+        if (ahora < 0)
+        {
+            fprintf(stderr, "No se pudo obtener el tiempo del sistema.\n");
+            break;
+        }
+
+        /* Generar una nueva lectura cuando corresponda */
+        if (ahora >= proxima_lectura)
+        {
+            DatosTelemetria lectura = {0};
+
+            time_t instante = time(NULL);
+
+            if (instante == (time_t)-1)
+            {
+                fprintf(stderr, "No se pudo obtener la hora actual.\n");
+                break;
+            }
+
+            lectura.ts = (long long)instante;
+
+            sensor_generar(
+                &lectura.temp,
+                &lectura.corriente
+            );
+
+            /* Guardar primero en SQLite */
+            if (datos_telemetria_guardar(db, &lectura) != 0)
+            {
+                fprintf(stderr, "No se pudo guardar la lectura.\n");
+                break;
+            }
+
+            printf(
+                "Lectura guardada | seq=%lld | temp=%.2f °C | corriente=%.2f A\n",
+                lectura.seq,
+                lectura.temp,
+                lectura.corriente
+            );
+
+            proxima_lectura = ahora + (long long)intervalo_s * 1000LL;
+        }
+
+        /* Intentar enviar cuando se cumpla el tiempo de espera */
+        if (ahora >= proximo_envio)
+        {
+            DatosTelemetria pendiente = {0};
+
+            int estado = datos_telemetria_obtener_pendiente(
+                db, &pendiente
+            );
+
+            if (estado < 0)
+            {
+                fprintf(stderr, "Error al consultar la cola de telemetría.\n");
+                break;
+            }
+
+            if (estado == 0)
+            {
+                char json[256];
+
+                int longitud = snprintf(
+                    json,
+                    sizeof(json),
+                    "{\"seq\":%lld,\"ts\":%lld,"
+                    "\"temp\":%.2f,\"corriente\":%.2f}",
+                    pendiente.seq,
+                    pendiente.ts,
+                    pendiente.temp,
+                    pendiente.corriente
+                );
+
+                if (longitud < 0 ||
+                    (size_t)longitud >= sizeof(json))
+                {
+                    fprintf(stderr, "No se pudo construir el JSON.\n");
+                    break;
+                }
+
+                /* Registrar el intento antes de realizar la solicitud */
+                if (datos_telemetria_incrementar_intentos(
+                        db, pendiente.seq) != 0)
+                {
+                    fprintf(stderr, "No se pudo registrar el intento.\n");
+                    break;
+                }
+
+                RedRespuesta respuesta = {0};
+
+                int error_red = red_cliente_post(
+                    cliente,
+                    "/api/v1/telemetria",
+                    json,
+                    &respuesta
+                );
+
+                if (error_red != 0)
+                {
+                    int espera = calcular_reintento(nivel_reintento);
+
+                    printf(
+                        "Error de conexión. Reintentando en %d segundos.\n",
+                        espera
+                    );
+
+                    if (nivel_reintento < 6)
+                        nivel_reintento++;
+
+                    proximo_envio = ahora + (long long)espera * 1000LL;
+
+                    red_liberar_respuesta(&respuesta);
+                }
+                else if (respuesta.codigo_http == 200 ||
+                         respuesta.codigo_http == 201)
+                {
+                    /* Confirmar en SQLite solamente después de aceptar */
+                    if (datos_telemetria_marcar_enviada(
+                            db, pendiente.seq) != 0)
+                    {
+                        fprintf(stderr, "No se pudo actualizar el estado enviado.\n");
+                        red_liberar_respuesta(&respuesta);
+                        break;
+                    }
+
+                    printf(
+                        "Lectura enviada | seq=%lld | HTTP %ld\n",
+                        pendiente.seq,
+                        respuesta.codigo_http
+                    );
+
+                    nivel_reintento = 1;
+                    proximo_envio = ahora + INTERVALO_ENVIO_MS;
+
+                    red_liberar_respuesta(&respuesta);
+                }
+                else if (respuesta.codigo_http == 429 ||
+                         respuesta.codigo_http == 503)
+                {
+                    int espera;
+
+                    if (respuesta.retry_after_s > 0 &&
+                        respuesta.retry_after_s <= 86400)
+                    {
+                        espera = (int)respuesta.retry_after_s;
+                    }
+                    else
+                    {
+                        espera = calcular_reintento(nivel_reintento);
+
+                        if (nivel_reintento < 6)
+                            nivel_reintento++;
+                    }
+
+                    printf(
+                        "Servidor temporalmente no disponible "
+                        "(HTTP %ld). Reintentando en %d segundos.\n",
+                        respuesta.codigo_http,
+                        espera
+                    );
+
+                    proximo_envio = ahora + (long long)espera * 1000LL;
+
+                    red_liberar_respuesta(&respuesta);
+                }
+                else
+                {
+                    fprintf(
+                        stderr,
+                        "Respuesta HTTP inesperada: %ld. "
+                        "La lectura permanece pendiente.\n",
+                        respuesta.codigo_http
+                    );
+
+                    red_liberar_respuesta(&respuesta);
+                    break;
+                }
+            }
+            else
+            {
+                /* No hay pendientes; revisar nuevamente después */
+                proximo_envio = ahora + INTERVALO_ENVIO_MS;
+            }
+        }
+
+        esperar_ms(INTERVALO_REVISION_MS);
+    }
+
+    printf("\nDeteniendo estación de telemetría...\n");
+
+    resultado = 0;
+
+finalizar:
+    if (cliente != NULL)
+        red_cliente_destruir(cliente);
+
+    if (red_iniciada)
+        red_finalizar();
+
+    datos_cerrar(db);
+
+    return resultado;
+}
+
 /* Programa principal */
 int main(int argc, char *argv[])
 {
@@ -629,10 +972,12 @@ int main(int argc, char *argv[])
     if (strcmp(argv[1], "analizar") == 0)
         return comando_analizar();
 
-    if (strcmp(argv[1], "enviar") == 0 ||
-        strcmp(argv[1], "escuchar") == 0)
+    if (strcmp(argv[1], "enviar") == 0)
+        return comando_enviar();
+
+    if (strcmp(argv[1], "escuchar") == 0)
     {
-        printf("Comando seleccionado: %s\n", argv[1]);
+        printf("Comando seleccionado: escuchar\n");
         return 0;
     }
 

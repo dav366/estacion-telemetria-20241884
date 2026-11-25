@@ -2,6 +2,9 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 import json
+import math
+import os
+import time
 
 TOKEN_PRUEBA = "token-prueba-local"
 
@@ -9,6 +12,30 @@ TOTAL_LECTURAS = 405
 UMBRAL_TEMP = 75.0
 
 MAQUINAS = ["MOTOR", "BOMBA", "VALVULA", "TURBINA"]
+TELEMETRIA_RECIBIDA = set()
+
+# Ventanas de interrupción configurables para las pruebas.
+DURACION_CORTE_S = int(os.getenv("DURACION_CORTE_S", "60"))
+INICIO_CORTE_1_S = int(os.getenv("INICIO_CORTE_1_S", "30"))
+INICIO_CORTE_2_S = int(os.getenv("INICIO_CORTE_2_S", "180"))
+INICIO_TELEMETRIA = None
+
+
+def tiempo_corte_restante():
+    global INICIO_TELEMETRIA
+
+    if INICIO_TELEMETRIA is None:
+        INICIO_TELEMETRIA = time.monotonic()
+
+    transcurrido = time.monotonic() - INICIO_TELEMETRIA
+
+    for inicio in (INICIO_CORTE_1_S, INICIO_CORTE_2_S):
+        fin = inicio + DURACION_CORTE_S
+
+        if inicio <= transcurrido < fin:
+            return math.ceil(fin - transcurrido)
+
+    return 0
 
 
 def generar_lectura(identificador):
@@ -166,7 +193,7 @@ def validar_analisis(datos):
 
 class ServidorPrueba(BaseHTTPRequestHandler):
 
-    def responder(self, codigo, contenido):
+    def responder(self, codigo, contenido, encabezados=None):
         datos = contenido.encode("utf-8")
 
         self.send_response(codigo)
@@ -175,6 +202,11 @@ class ServidorPrueba(BaseHTTPRequestHandler):
             "text/plain; charset=utf-8"
         )
         self.send_header("Content-Length", str(len(datos)))
+
+        if encabezados:
+            for nombre, valor in encabezados.items():
+                self.send_header(nombre, str(valor))
+
         self.end_headers()
         self.wfile.write(datos)
 
@@ -257,6 +289,62 @@ class ServidorPrueba(BaseHTTPRequestHandler):
             return
 
         ruta = urlparse(self.path).path
+
+        if ruta == "/api/v1/telemetria":
+            restante = tiempo_corte_restante()
+
+            if restante > 0:
+                print(
+                    "Interrupción simulada | HTTP 503 | "
+                    "Retry-After:", restante
+                )
+                self.responder(
+                    503,
+                    "error=servidor_temporalmente_no_disponible",
+                    {"Retry-After": restante}
+                )
+                return
+
+            if not isinstance(datos, dict):
+                self.responder(400, "error=datos_invalidos")
+                return
+
+            seq = datos.get("seq")
+            ts = datos.get("ts")
+            temp = datos.get("temp")
+            corriente = datos.get("corriente")
+
+            if (
+                isinstance(seq, bool)
+                or not isinstance(seq, int)
+                or seq <= 0
+                or isinstance(ts, bool)
+                or not isinstance(ts, int)
+                or isinstance(temp, bool)
+                or not isinstance(temp, (int, float))
+                or isinstance(corriente, bool)
+                or not isinstance(corriente, (int, float))
+                or not math.isfinite(temp)
+                or not math.isfinite(corriente)
+            ):
+                self.responder(400, "error=datos_invalidos")
+                return
+
+            if seq in TELEMETRIA_RECIBIDA:
+                self.responder(200, "estado=duplicada")
+                return
+
+            TELEMETRIA_RECIBIDA.add(seq)
+
+            print(
+                "\nTelemetría recibida:",
+                "| seq:", seq,
+                "| temp:", temp,
+                "| corriente:", corriente
+            )
+
+            self.responder(201, "estado=creada")
+            return
 
         if ruta == "/api/v1/respuestas/descarga":
             filas = datos.get("filas_unicas")
