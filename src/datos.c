@@ -553,3 +553,254 @@ error:
 
     return 1;
 }
+
+/* Guardar una lectura y generar su secuencia */
+int datos_telemetria_guardar(
+    sqlite3 *db,
+    DatosTelemetria *lectura
+)
+{
+    if (db == NULL || lectura == NULL)
+        return 1;
+
+    if (datos_transaccion_iniciar(db) != 0)
+        return 1;
+
+    const char *sql =
+        "INSERT INTO telemetria "
+        "(ts, temp, corriente, enviado, intentos) "
+        "VALUES (?, ?, ?, 0, 0);";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_int64(consulta, 1, lectura->ts);
+    sqlite3_bind_double(consulta, 2, lectura->temp);
+    sqlite3_bind_double(consulta, 3, lectura->corriente);
+
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+    consulta = NULL;
+
+    if (resultado != SQLITE_DONE)
+        goto error;
+
+    lectura->seq = sqlite3_last_insert_rowid(db);
+    lectura->enviado = 0;
+    lectura->intentos = 0;
+
+    if (datos_transaccion_confirmar(db) != 0)
+        goto error;
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    datos_transaccion_cancelar(db);
+
+    fprintf(stderr, "Error al guardar telemetría: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
+
+/* Obtener la lectura pendiente más antigua */
+int datos_telemetria_obtener_pendiente(
+    sqlite3 *db,
+    DatosTelemetria *lectura
+)
+{
+    if (db == NULL || lectura == NULL)
+        return -1;
+
+    const char *sql =
+        "SELECT seq, ts, temp, corriente, enviado, intentos "
+        "FROM telemetria "
+        "WHERE enviado = 0 "
+        "ORDER BY seq ASC "
+        "LIMIT 1;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    resultado = sqlite3_step(consulta);
+
+    if (resultado == SQLITE_DONE)
+    {
+        sqlite3_finalize(consulta);
+        return 1;
+    }
+
+    if (resultado != SQLITE_ROW)
+        goto error;
+
+    lectura->seq = sqlite3_column_int64(consulta, 0);
+    lectura->ts = sqlite3_column_int64(consulta, 1);
+    lectura->temp = sqlite3_column_double(consulta, 2);
+    lectura->corriente = sqlite3_column_double(consulta, 3);
+    lectura->enviado = sqlite3_column_int(consulta, 4);
+    lectura->intentos = sqlite3_column_int(consulta, 5);
+
+    sqlite3_finalize(consulta);
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al recuperar telemetría pendiente: %s\n",
+            sqlite3_errmsg(db));
+
+    return -1;
+}
+
+/* Marcar una lectura como enviada */
+int datos_telemetria_marcar_enviada(
+    sqlite3 *db,
+    long long seq
+)
+{
+    if (db == NULL || seq <= 0)
+        return 1;
+
+    const char *sql =
+        "UPDATE telemetria "
+        "SET enviado = 1 "
+        "WHERE seq = ?;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_int64(consulta, 1, seq);
+
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+
+    if (resultado != SQLITE_DONE)
+        goto error;
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al marcar telemetría enviada: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
+
+/* Contar las lecturas pendientes */
+int datos_telemetria_contar_pendientes(
+    sqlite3 *db,
+    int *cantidad
+)
+{
+    if (db == NULL || cantidad == NULL)
+        return 1;
+
+    const char *sql =
+        "SELECT COUNT(*) FROM telemetria WHERE enviado = 0;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    resultado = sqlite3_step(consulta);
+
+    if (resultado != SQLITE_ROW)
+        goto error;
+
+    *cantidad = sqlite3_column_int(consulta, 0);
+
+    sqlite3_finalize(consulta);
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al contar telemetría pendiente: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
+
+/* Incrementar los intentos de envío */
+int datos_telemetria_incrementar_intentos(
+    sqlite3 *db,
+    long long seq
+)
+{
+    if (db == NULL || seq <= 0)
+        return 1;
+
+    const char *sql =
+        "UPDATE telemetria "
+        "SET intentos = intentos + 1 "
+        "WHERE seq = ?;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_int64(consulta, 1, seq);
+
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+
+    if (resultado != SQLITE_DONE)
+        goto error;
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al incrementar intentos: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}

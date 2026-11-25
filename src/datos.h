@@ -19,7 +19,6 @@ typedef struct
 
     char estado[20];
 
-    /* Indican si los campos numéricos están presentes */
     int tiene_temp;
     int tiene_corriente;
     int tiene_vibracion;
@@ -42,6 +41,18 @@ typedef struct
 
 } DatosAnalisis;
 
+/* Lectura pendiente de telemetría */
+typedef struct
+{
+    long long seq;
+    long long ts;
+    double temp;
+    double corriente;
+    int enviado;
+    int intentos;
+
+} DatosTelemetria;
+
 /* Funciones generales */
 int datos_abrir(sqlite3 **db);
 void datos_cerrar(sqlite3 *db);
@@ -57,7 +68,7 @@ int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor);
 int datos_config_obtener(sqlite3 *db, const char *clave,
                          char *valor, size_t capacidad);
 
-/* Lecturas */
+/* Lecturas de planta */
 int datos_lectura_guardar(sqlite3 *db, const DatosLectura *lectura);
 int datos_lecturas_limpiar(sqlite3 *db);
 int datos_lecturas_resumen(sqlite3 *db, int *cantidad, long long *suma_ids);
@@ -69,6 +80,32 @@ int datos_lecturas_analizar(
     DatosAnalisis resultados[],
     int capacidad,
     int *cantidad
+);
+
+/* Gestión de telemetría */
+int datos_telemetria_guardar(
+    sqlite3 *db,
+    DatosTelemetria *lectura
+);
+
+int datos_telemetria_obtener_pendiente(
+    sqlite3 *db,
+    DatosTelemetria *lectura
+);
+
+int datos_telemetria_marcar_enviada(
+    sqlite3 *db,
+    long long seq
+);
+
+int datos_telemetria_contar_pendientes(
+    sqlite3 *db,
+    int *cantidad
+);
+
+int datos_telemetria_incrementar_intentos(
+    sqlite3 *db,
+    long long seq
 );
 
 #endif
