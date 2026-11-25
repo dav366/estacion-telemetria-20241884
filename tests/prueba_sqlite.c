@@ -1,25 +1,35 @@
 
+/* PRUEBA DEL MÓDULO DE ALMACENAMIENTO */
+
 #include <stdio.h>
-#include "sqlite3.h"
+
+#include "datos.h"
 
 int main(void)
 {
+    /* Declarar el puntero de conexión */
     sqlite3 *db = NULL;
 
-    int resultado = sqlite3_open(":memory:", &db);
-
-    if (resultado != SQLITE_OK)
+    /* Abrir la base de datos */
+    if (datos_abrir(&db) != 0)
     {
-        printf("Error al abrir SQLite: %s\n",
-               sqlite3_errmsg(db));
-
-        sqlite3_close(db);
+        fprintf(stderr, "No se pudo abrir la base de datos.\n");
         return 1;
     }
 
-    printf("SQLite funciona correctamente.\n");
+    /* Inicializar las tablas */
+    if (datos_inicializar(db) != 0)
+    {
+        fprintf(stderr, "No se pudo inicializar la base de datos.\n");
+        datos_cerrar(db);
+        return 1;
+    }
 
-    sqlite3_close(db);
+    /* Confirmar que la prueba terminó correctamente */
+    printf("Prueba del módulo SQLite completada.\n");
+
+    /* Cerrar la conexión */
+    datos_cerrar(db);
 
     return 0;
 }
