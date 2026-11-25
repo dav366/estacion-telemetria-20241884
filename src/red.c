@@ -855,3 +855,302 @@ error_mqtt:
 
     return 1;
 }
+
+/* Contexto interno para recibir mensajes MQTT */
+#define RED_MQTT_BUFFER_MAX 4096
+
+typedef struct
+{
+    char buffer[RED_MQTT_BUFFER_MAX];
+    size_t usado;
+
+    RedMqttCallback callback;
+    void *contexto;
+
+    int error;
+} RedMqttRecepcion;
+
+/* Procesar las tramas recibidas mediante MQTT */
+static size_t red_mqtt_recibir(
+    char *datos,
+    size_t tamano,
+    size_t cantidad,
+    void *contexto
+)
+{
+    RedMqttRecepcion *recepcion = contexto;
+    size_t bytes = tamano * cantidad;
+
+    if (recepcion == NULL || datos == NULL)
+        return 0;
+
+    if (bytes == 0)
+        return 0;
+
+    if (bytes > sizeof(recepcion->buffer) - recepcion->usado)
+    {
+        fprintf(stderr, "Error: búfer MQTT lleno.\n");
+        recepcion->error = 1;
+        return 0;
+    }
+
+    memcpy(
+        recepcion->buffer + recepcion->usado,
+        datos,
+        bytes
+    );
+
+    recepcion->usado += bytes;
+
+    while (recepcion->usado >= 2)
+    {
+        size_t longitud_topico =
+            ((unsigned char)recepcion->buffer[0] << 8) |
+            (unsigned char)recepcion->buffer[1];
+
+        if (longitud_topico == 0 ||
+            longitud_topico > 255)
+        {
+            recepcion->error = 1;
+            return 0;
+        }
+
+        size_t inicio_mensaje = 2 + longitud_topico;
+
+        if (recepcion->usado < inicio_mensaje)
+            break;
+
+        char *fin = memchr(
+            recepcion->buffer + inicio_mensaje,
+            '\n',
+            recepcion->usado - inicio_mensaje
+        );
+
+        if (fin == NULL)
+            break;
+
+        size_t longitud_mensaje =
+            (size_t)(fin -
+            (recepcion->buffer + inicio_mensaje)) + 1;
+
+        char topico[256];
+        char *mensaje = malloc(longitud_mensaje + 1);
+
+        if (mensaje == NULL)
+        {
+            recepcion->error = 1;
+            return 0;
+        }
+
+        memcpy(
+            topico,
+            recepcion->buffer + 2,
+            longitud_topico
+        );
+
+        topico[longitud_topico] = '\0';
+
+        memcpy(
+            mensaje,
+            recepcion->buffer + inicio_mensaje,
+            longitud_mensaje
+        );
+
+        mensaje[longitud_mensaje] = '\0';
+
+        int resultado = recepcion->callback(
+            topico,
+            mensaje,
+            longitud_mensaje,
+            recepcion->contexto
+        );
+
+        free(mensaje);
+
+        if (resultado != 0)
+        {
+            recepcion->error = 1;
+            return 0;
+        }
+
+        size_t consumidos =
+            inicio_mensaje + longitud_mensaje;
+
+        recepcion->usado -= consumidos;
+
+        memmove(
+            recepcion->buffer,
+            recepcion->buffer + consumidos,
+            recepcion->usado
+        );
+    }
+
+    return bytes;
+}
+
+/* Permitir detener la suscripción mediante Ctrl+C */
+static int red_mqtt_progreso(
+    void *contexto,
+    curl_off_t descarga_total,
+    curl_off_t descargado,
+    curl_off_t subida_total,
+    curl_off_t subido
+)
+{
+    (void)descarga_total;
+    (void)descargado;
+    (void)subida_total;
+    (void)subido;
+
+    volatile sig_atomic_t *interrumpir = contexto;
+
+    return interrumpir != NULL && *interrumpir ? 1 : 0;
+}
+
+/* Suscribirse a un tópico MQTT y procesar sus mensajes */
+int red_mqtt_escuchar(
+    const char *topico,
+    RedMqttCallback callback,
+    void *contexto,
+    volatile sig_atomic_t *interrumpir
+)
+{
+    const char *host = getenv("ITLA_HOST");
+    const char *matricula = getenv("ITLA_MATRICULA");
+    const char *token = getenv("ITLA_TOKEN");
+
+    if (host == NULL || host[0] == '\0' ||
+        matricula == NULL || matricula[0] == '\0' ||
+        token == NULL || token[0] == '\0' ||
+        topico == NULL || topico[0] == '\0' ||
+        callback == NULL || interrumpir == NULL)
+    {
+        fprintf(stderr, "Error: configuración MQTT incompleta.\n");
+        return 1;
+    }
+
+    if (strchr(host, '\r') != NULL ||
+        strchr(host, '\n') != NULL ||
+        strchr(host, '/') != NULL ||
+        strchr(matricula, '\r') != NULL ||
+        strchr(matricula, '\n') != NULL ||
+        strchr(token, '\r') != NULL ||
+        strchr(token, '\n') != NULL ||
+        strchr(topico, '\r') != NULL ||
+        strchr(topico, '\n') != NULL ||
+        strchr(topico, ' ') != NULL)
+    {
+        fprintf(stderr, "Error: configuración MQTT no válida.\n");
+        return 1;
+    }
+
+    int longitud = snprintf(
+        NULL, 0, "mqtt://%s:1883/%s", host, topico
+    );
+
+    if (longitud < 0)
+        return 1;
+
+    char *url = malloc((size_t)longitud + 1);
+
+    if (url == NULL)
+        return 1;
+
+    snprintf(
+        url,
+        (size_t)longitud + 1,
+        "mqtt://%s:1883/%s",
+        host,
+        topico
+    );
+
+    CURL *curl = curl_easy_init();
+
+    if (curl == NULL)
+    {
+        free(url);
+        return 1;
+    }
+
+    RedMqttRecepcion recepcion = {0};
+
+    recepcion.callback = callback;
+    recepcion.contexto = contexto;
+
+    CURLcode resultado;
+
+#define MQTT_CONFIGURAR(opcion, valor)                  \
+    do                                                   \
+    {                                                    \
+        resultado = curl_easy_setopt(curl, opcion, valor); \
+        if (resultado != CURLE_OK)                       \
+            goto error_escucha;                          \
+    } while (0)
+
+    MQTT_CONFIGURAR(CURLOPT_URL, url);
+    MQTT_CONFIGURAR(CURLOPT_USERNAME, matricula);
+    MQTT_CONFIGURAR(CURLOPT_PASSWORD, token);
+
+    MQTT_CONFIGURAR(
+        CURLOPT_WRITEFUNCTION,
+        red_mqtt_recibir
+    );
+
+    MQTT_CONFIGURAR(
+        CURLOPT_WRITEDATA,
+        &recepcion
+    );
+
+    MQTT_CONFIGURAR(
+        CURLOPT_XFERINFOFUNCTION,
+        red_mqtt_progreso
+    );
+
+    MQTT_CONFIGURAR(
+        CURLOPT_XFERINFODATA,
+        (void *)interrumpir
+    );
+
+    MQTT_CONFIGURAR(CURLOPT_NOPROGRESS, 0L);
+    MQTT_CONFIGURAR(CURLOPT_CONNECTTIMEOUT, 5L);
+    MQTT_CONFIGURAR(CURLOPT_NOSIGNAL, 1L);
+
+#undef MQTT_CONFIGURAR
+
+    resultado = curl_easy_perform(curl);
+
+    if (recepcion.error)
+    {
+        fprintf(stderr, "Error al procesar una trama MQTT.\n");
+        goto error_escucha;
+    }
+
+    curl_easy_cleanup(curl);
+    free(url);
+
+    if (resultado == CURLE_OK ||
+        (resultado == CURLE_ABORTED_BY_CALLBACK &&
+         *interrumpir))
+        return 0;
+
+    fprintf(
+        stderr,
+        "Error en la suscripción MQTT: %s\n",
+        curl_easy_strerror(resultado)
+    );
+
+    return 1;
+
+error_escucha:
+
+    fprintf(
+        stderr,
+        "Error al configurar la suscripción MQTT: %s\n",
+        curl_easy_strerror(resultado)
+    );
+
+    curl_easy_cleanup(curl);
+    free(url);
+
+    return 1;
+}
