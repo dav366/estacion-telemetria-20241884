@@ -1049,6 +1049,261 @@ finalizar:
     return resultado;
 }
 
+
+/* Contexto compartido con el callback de recepción MQTT */
+typedef struct
+{
+    sqlite3 *db;
+} ContextoAlarmas;
+
+/* Procesar mensajes MQTT de alarmas */
+static int procesar_mensaje_alarma(
+    const char *topico,
+    const char *mensaje,
+    size_t longitud,
+    void *contexto
+)
+{
+    ContextoAlarmas *datos = contexto;
+    char copia[256];
+    char *campos[4];
+    size_t longitudes[4];
+    size_t cantidad_campos = 1;
+    size_t longitud_util;
+    DatosAlarma alarma = {0};
+    char ts_recibida[30];
+    int confirmada = 0;
+
+    if (topico == NULL || mensaje == NULL ||
+        datos == NULL || datos->db == NULL ||
+        longitud == 0 || longitud >= sizeof(copia))
+    {
+        fprintf(stderr, "Mensaje MQTT inválido.\n");
+        return 0;
+    }
+
+    if (memchr(mensaje, '\0', longitud) != NULL)
+    {
+        fprintf(stderr, "El mensaje MQTT contiene datos inválidos.\n");
+        return 0;
+    }
+
+    memcpy(copia, mensaje, longitud);
+    copia[longitud] = '\0';
+
+    longitud_util = longitud;
+
+    while (longitud_util > 0 &&
+           (copia[longitud_util - 1] == '\n' ||
+            copia[longitud_util - 1] == '\r'))
+    {
+        copia[--longitud_util] = '\0';
+    }
+
+    if (longitud_util == 0)
+        return 0;
+
+    campos[0] = copia;
+
+    for (size_t i = 0; i < longitud_util; i++)
+    {
+        if (copia[i] == ';')
+        {
+            if (cantidad_campos >= 4)
+            {
+                fprintf(stderr, "Mensaje MQTT con demasiados campos.\n");
+                return 0;
+            }
+
+            copia[i] = '\0';
+            campos[cantidad_campos++] = &copia[i + 1];
+        }
+    }
+
+    for (size_t i = 0; i < cantidad_campos; i++)
+    {
+        longitudes[i] = strlen(campos[i]);
+
+        if (longitudes[i] == 0)
+        {
+            fprintf(stderr, "Mensaje MQTT con campos vacíos.\n");
+            return 0;
+        }
+    }
+
+    if (strcmp(campos[0], "NINGUNA") == 0)
+    {
+        if (cantidad_campos != 2)
+            fprintf(stderr, "Formato NINGUNA inválido.\n");
+
+        return 0;
+    }
+
+    if (strcmp(campos[0], "ALARMA") != 0 ||
+        cantidad_campos != 4)
+    {
+        fprintf(stderr, "Tipo o formato de mensaje MQTT desconocido.\n");
+        return 0;
+    }
+
+    if (longitudes[1] >= sizeof(alarma.codigo) ||
+        longitudes[2] >= sizeof(alarma.maquina) ||
+        longitudes[3] >= sizeof(alarma.ts_servidor))
+    {
+        fprintf(stderr, "Los campos de la alarma exceden su capacidad.\n");
+        return 0;
+    }
+
+    snprintf(alarma.codigo, sizeof(alarma.codigo), "%s", campos[1]);
+    snprintf(alarma.maquina, sizeof(alarma.maquina), "%s", campos[2]);
+    snprintf(alarma.ts_servidor, sizeof(alarma.ts_servidor),
+             "%s", campos[3]);
+
+    snprintf(ts_recibida, sizeof(ts_recibida), "%lld",
+             (long long)time(NULL));
+
+    snprintf(alarma.ts_recibida, sizeof(alarma.ts_recibida),
+             "%s", ts_recibida);
+
+    if (datos_alarma_guardar(datos->db, &alarma) != 0)
+    {
+        fprintf(stderr, "No se pudo almacenar la alarma %s.\n",
+                alarma.codigo);
+        return 0;
+    }
+
+    if (datos_alarma_confirmada(
+            datos->db, alarma.codigo, &confirmada) != 0)
+        return 0;
+
+    if (confirmada)
+    {
+        printf("Alarma %s ya estaba confirmada; se ignora.\n",
+               alarma.codigo);
+    }
+    else
+    {
+        printf("Alarma recibida | Código: %s | Máquina: %s\n",
+               alarma.codigo, alarma.maquina);
+    }
+
+    return 0;
+}
+
+
+/* Variable para detener la recepción de alarmas */
+static volatile sig_atomic_t detener_escucha = 0;
+
+/* Manejar la interrupción del comando escuchar */
+static void manejar_interrupcion_escucha(int senal)
+{
+    (void)senal;
+    detener_escucha = 1;
+}
+
+/* Escuchar y procesar alarmas MQTT */
+static int comando_escuchar(void)
+{
+    sqlite3 *db = NULL;
+    ContextoAlarmas contexto;
+    const char *matricula = getenv("ITLA_MATRICULA");
+    char topico[128];
+    struct sigaction accion;
+    int reintento = 1;
+
+    if (matricula == NULL || matricula[0] == '\0')
+    {
+        fprintf(stderr, "Falta configurar ITLA_MATRICULA.\n");
+        return 1;
+    }
+
+    if (snprintf(topico, sizeof(topico),
+                 "itla/planta/%s/alarma", matricula)
+        >= (int)sizeof(topico))
+    {
+        fprintf(stderr, "El tópico MQTT es demasiado largo.\n");
+        return 1;
+    }
+
+    if (datos_abrir(&db) != 0)
+    {
+        fprintf(stderr, "No se pudo abrir la base de datos.\n");
+        return 1;
+    }
+
+    if (datos_inicializar(db) != 0)
+    {
+        fprintf(stderr, "No se pudo inicializar la base de datos.\n");
+        sqlite3_close(db);
+        return 1;
+    }
+
+    contexto.db = db;
+    detener_escucha = 0;
+
+    memset(&accion, 0, sizeof(accion));
+    accion.sa_handler = manejar_interrupcion_escucha;
+    sigemptyset(&accion.sa_mask);
+
+    if (sigaction(SIGINT, &accion, NULL) != 0 ||
+        sigaction(SIGTERM, &accion, NULL) != 0)
+    {
+        perror("No se pudieron configurar las señales");
+        sqlite3_close(db);
+        return 1;
+    }
+
+    printf("Escuchando alarmas MQTT...\n");
+    printf("Tópico: %s\n", topico);
+    printf("Presiona Ctrl+C para detener.\n");
+
+    while (!detener_escucha)
+    {
+        red_mqtt_escuchar(
+            topico,
+            procesar_mensaje_alarma,
+            &contexto,
+            &detener_escucha
+        );
+
+        if (detener_escucha)
+            break;
+
+        fprintf(stderr,
+                "Conexión MQTT interrumpida. Reintentando en %d segundos.\n",
+                calcular_reintento(reintento));
+
+        {
+            int espera = calcular_reintento(reintento);
+            struct timespec tiempo = {
+                .tv_sec = espera,
+                .tv_nsec = 0
+            };
+
+            while (!detener_escucha &&
+                   nanosleep(&tiempo, &tiempo) != 0 &&
+                   errno == EINTR)
+            {
+                /* Continuar esperando o detenerse por señal */
+            }
+        }
+
+        if (reintento < 6)
+            reintento++;
+    }
+
+    printf("\nDeteniendo escucha de alarmas...\n");
+
+    if (sqlite3_close(db) != SQLITE_OK)
+    {
+        fprintf(stderr, "No se pudo cerrar la base de datos.\n");
+        return 1;
+    }
+
+    printf("Base de datos cerrada correctamente.\n");
+    return 0;
+}
+
 /* Programa principal */
 int main(int argc, char *argv[])
 {
@@ -1072,10 +1327,7 @@ int main(int argc, char *argv[])
         return comando_enviar();
 
     if (strcmp(argv[1], "escuchar") == 0)
-    {
-        printf("Comando seleccionado: escuchar\n");
-        return 0;
-    }
+        return comando_escuchar();
 
     fprintf(stderr, "Comando desconocido.\n");
     return 1;
