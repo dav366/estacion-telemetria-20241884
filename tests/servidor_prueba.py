@@ -32,7 +32,17 @@ class ServidorPrueba(BaseHTTPRequestHandler):
                 self.responder(401, "error=autenticacion")
                 return
 
-            self.responder(200, "maquinas=3\nintervalo_s=10")
+            configuracion = (
+                "matricula=20241884\n"
+                "hora=12:00\n"
+                "umbral_temp=75.0\n"
+                "intervalo_s=10\n"
+                "latido_s=10\n"
+                "maquinas=3\n"
+                "lote_max=200"
+            )
+
+            self.responder(200, configuracion)
             return
 
         self.responder(404, "error=no_encontrado")
