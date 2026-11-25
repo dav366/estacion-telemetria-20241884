@@ -20,6 +20,102 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
+
+/* Cantidad máxima de lecturas por solicitud */
+#define LOTE_DESCARGA 200
+
+/* Convertir texto a número entero */
+static int convertir_entero(const char *texto, int *valor)
+{
+    char *final;
+    long numero;
+
+    errno = 0;
+    numero = strtol(texto, &final, 10);
+
+    if (errno != 0 || texto == final || *final != '\0' ||
+        numero < 0 || numero > INT_MAX)
+    {
+        return -1;
+    }
+
+    *valor = (int)numero;
+
+    return 0;
+}
+
+/* Convertir texto a número decimal */
+static int convertir_decimal(const char *texto, double *valor)
+{
+    char *final;
+
+    errno = 0;
+    *valor = strtod(texto, &final);
+
+    if (errno != 0 || texto == final || *final != '\0')
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Procesar una línea recibida del servidor */
+static int procesar_lectura(char *linea, DatosLectura *lectura)
+{
+    char *campos[7];
+
+    campos[0] = linea;
+
+    /* Separar los siete campos mediante comas */
+    for (int i = 0; i < 6; i++)
+    {
+        char *separador = strchr(campos[i], ',');
+
+        if (separador == NULL)
+            return -1;
+
+        *separador = '\0';
+        campos[i + 1] = separador + 1;
+    }
+
+    /* Comprobar que no existan campos adicionales */
+    if (strchr(campos[6], ',') != NULL)
+        return -1;
+
+    /* Comprobar que ningún campo esté vacío */
+    for (int i = 0; i < 7; i++)
+    {
+        if (campos[i][0] == '\0')
+            return -1;
+    }
+
+    /* Validar los tamaños de los campos de texto */
+    if (strlen(campos[1]) >= sizeof(lectura->maquina) ||
+        strlen(campos[2]) >= sizeof(lectura->ts) ||
+        strlen(campos[6]) >= sizeof(lectura->estado))
+    {
+        return -1;
+    }
+
+    /* Convertir los campos numéricos */
+    if (convertir_entero(campos[0], &lectura->id) != 0 ||
+        convertir_decimal(campos[3], &lectura->temp) != 0 ||
+        convertir_decimal(campos[4], &lectura->corriente) != 0 ||
+        convertir_decimal(campos[5], &lectura->vibracion) != 0)
+    {
+        return -1;
+    }
+
+    /* Copiar los campos de texto */
+    strcpy(lectura->maquina, campos[1]);
+    strcpy(lectura->ts, campos[2]);
+    strcpy(lectura->estado, campos[6]);
+
+    return 0;
+}
 
 /* Descargar y almacenar la configuración del servidor */
 static int comando_config(void)
@@ -130,6 +226,173 @@ finalizar:
     return resultado;
 }
 
+/* Descargar y almacenar las lecturas de la planta */
+static int comando_descargar(void)
+{
+    sqlite3 *db = NULL;
+    RedRespuesta respuesta = {0};
+
+    int resultado = 1;
+    int red_iniciada = 0;
+    int desde_id = 1;
+    int total_lecturas = 0;
+
+    char ruta[100];
+
+    /* Abrir la base de datos local */
+    if (datos_abrir(&db) != 0)
+        goto finalizar;
+
+    /* Crear las tablas necesarias */
+    if (datos_inicializar(db) != 0)
+        goto finalizar;
+
+    /* Inicializar libcurl */
+    if (red_inicializar() != 0)
+        goto finalizar;
+
+    red_iniciada = 1;
+
+    printf("Iniciando descarga de lecturas...\n");
+
+    /* Descargar los registros por lotes */
+    while (1)
+    {
+        int cantidad_pagina = 0;
+        int ultimo_id = desde_id - 1;
+
+        /* Construir la ruta con los parámetros de paginación */
+        int longitud = snprintf(
+            ruta,
+            sizeof(ruta),
+            "/api/v1/lecturas?desde_id=%d&limite=%d",
+            desde_id,
+            LOTE_DESCARGA
+        );
+
+        if (longitud < 0 || (size_t)longitud >= sizeof(ruta))
+        {
+            fprintf(stderr, "Error al construir la solicitud.\n");
+            goto finalizar;
+        }
+
+        /* Solicitar las lecturas al servidor */
+        if (red_get(ruta, &respuesta) != 0)
+        {
+            fprintf(stderr, "Error al descargar las lecturas.\n");
+            goto finalizar;
+        }
+
+        /* Comprobar si existen registros */
+        if (respuesta.contenido == NULL ||
+            respuesta.longitud == 0)
+        {
+            red_liberar_respuesta(&respuesta);
+            break;
+        }
+
+        char *linea = respuesta.contenido;
+
+        /* Procesar cada registro recibido */
+        while (linea != NULL && *linea != '\0')
+        {
+            char *siguiente = strchr(linea, '\n');
+
+            if (siguiente != NULL)
+            {
+                *siguiente = '\0';
+                siguiente++;
+            }
+
+            /* Eliminar retorno de carro si existe */
+            size_t longitud_linea = strlen(linea);
+
+            if (longitud_linea > 0 &&
+                linea[longitud_linea - 1] == '\r')
+            {
+                linea[longitud_linea - 1] = '\0';
+            }
+
+            /* Ignorar líneas vacías */
+            if (linea[0] != '\0')
+            {
+                DatosLectura lectura = {0};
+
+                /* Validar y procesar el registro */
+                if (procesar_lectura(linea, &lectura) != 0)
+                {
+                    fprintf(stderr, "Error: lectura recibida inválida.\n");
+                    red_liberar_respuesta(&respuesta);
+                    goto finalizar;
+                }
+
+                /* Comprobar el orden de los identificadores */
+                if (lectura.id < desde_id ||
+                    lectura.id <= ultimo_id)
+                {
+                    fprintf(stderr, "Error: identificador de lectura inválido.\n");
+                    red_liberar_respuesta(&respuesta);
+                    goto finalizar;
+                }
+
+                /* Guardar la lectura en SQLite */
+                if (datos_lectura_guardar(db, &lectura) != 0)
+                {
+                    fprintf(stderr, "Error al almacenar una lectura.\n");
+                    red_liberar_respuesta(&respuesta);
+                    goto finalizar;
+                }
+
+                ultimo_id = lectura.id;
+                cantidad_pagina++;
+                total_lecturas++;
+            }
+
+            linea = siguiente;
+        }
+
+        /* Liberar la respuesta del servidor */
+        red_liberar_respuesta(&respuesta);
+
+        printf("Lote procesado: %d lecturas.\n", cantidad_pagina);
+
+        /* Si no hay más registros, finalizar */
+        if (cantidad_pagina == 0 ||
+            cantidad_pagina < LOTE_DESCARGA)
+        {
+            break;
+        }
+
+        /* Preparar el identificador para el siguiente lote */
+        if (ultimo_id == INT_MAX)
+        {
+            fprintf(stderr, "Error: se alcanzó el límite de identificadores.\n");
+            goto finalizar;
+        }
+
+        desde_id = ultimo_id + 1;
+    }
+
+    printf("\nDescarga completada.\n");
+    printf("Lecturas procesadas: %d\n", total_lecturas);
+
+    resultado = 0;
+
+finalizar:
+
+    /* Liberar cualquier respuesta pendiente */
+    red_liberar_respuesta(&respuesta);
+
+    /* Finalizar libcurl si fue inicializado */
+    if (red_iniciada)
+        red_finalizar();
+
+    /* Cerrar la base de datos */
+    datos_cerrar(db);
+
+    return resultado;
+}
+
 /* Función principal del programa */
 int main(int argc, char *argv[])
 {
@@ -154,7 +417,7 @@ int main(int argc, char *argv[])
     }
     else if (strcmp(argv[1], "descargar") == 0)
     {
-        printf("Comando seleccionado: descargar\n");
+        return comando_descargar();
     }
     else if (strcmp(argv[1], "analizar") == 0)
     {
