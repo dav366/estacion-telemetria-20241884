@@ -406,3 +406,150 @@ error:
             sqlite3_errmsg(db));
     return 1;
 }
+
+/* Analizar lecturas y calcular estadísticas por máquina */
+int datos_lecturas_analizar(
+    sqlite3 *db,
+    double umbral,
+    DatosAnalisis resultados[],
+    int capacidad,
+    int *cantidad
+)
+{
+    if (db == NULL || resultados == NULL ||
+        capacidad <= 0 || cantidad == NULL)
+        return 1;
+
+    const char *sql =
+        "SELECT "
+        "maquina, "
+
+        "SUM(CASE WHEN "
+        "estado = 'OK' "
+        "AND temp IS NOT NULL "
+        "AND temp != -999.0 "
+        "AND corriente IS NOT NULL "
+        "AND vibracion IS NOT NULL "
+        "THEN 1 ELSE 0 END), "
+
+        "SUM(CASE WHEN "
+        "estado IS NULL "
+        "OR estado != 'OK' "
+        "OR temp IS NULL "
+        "OR temp = -999.0 "
+        "OR corriente IS NULL "
+        "OR vibracion IS NULL "
+        "THEN 1 ELSE 0 END), "
+
+        "MIN(CASE WHEN "
+        "estado = 'OK' "
+        "AND temp IS NOT NULL "
+        "AND temp != -999.0 "
+        "AND corriente IS NOT NULL "
+        "AND vibracion IS NOT NULL "
+        "THEN temp END), "
+
+        "MAX(CASE WHEN "
+        "estado = 'OK' "
+        "AND temp IS NOT NULL "
+        "AND temp != -999.0 "
+        "AND corriente IS NOT NULL "
+        "AND vibracion IS NOT NULL "
+        "THEN temp END), "
+
+        "AVG(CASE WHEN "
+        "estado = 'OK' "
+        "AND temp IS NOT NULL "
+        "AND temp != -999.0 "
+        "AND corriente IS NOT NULL "
+        "AND vibracion IS NOT NULL "
+        "THEN temp END), "
+
+        "SUM(CASE WHEN "
+        "estado = 'OK' "
+        "AND temp IS NOT NULL "
+        "AND temp != -999.0 "
+        "AND corriente IS NOT NULL "
+        "AND vibracion IS NOT NULL "
+        "AND temp > ? "
+        "THEN 1 ELSE 0 END) "
+
+        "FROM lecturas_planta "
+        "GROUP BY maquina "
+        "ORDER BY maquina;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    resultado = sqlite3_bind_double(consulta, 1, umbral);
+
+    if (resultado != SQLITE_OK)
+    {
+        sqlite3_finalize(consulta);
+        goto error;
+    }
+
+    *cantidad = 0;
+
+    while ((resultado = sqlite3_step(consulta)) == SQLITE_ROW)
+    {
+        if (*cantidad >= capacidad)
+        {
+            sqlite3_finalize(consulta);
+            return 1;
+        }
+
+        DatosAnalisis *dato = &resultados[*cantidad];
+
+        memset(dato, 0, sizeof(*dato));
+
+        const unsigned char *maquina =
+            sqlite3_column_text(consulta, 0);
+
+        if (maquina == NULL)
+        {
+            sqlite3_finalize(consulta);
+            return 1;
+        }
+
+        size_t longitud = strlen((const char *)maquina);
+
+        if (longitud >= sizeof(dato->maquina))
+        {
+            sqlite3_finalize(consulta);
+            return 1;
+        }
+
+        memcpy(dato->maquina, maquina, longitud + 1);
+
+        dato->validas = sqlite3_column_int(consulta, 1);
+        dato->descartadas = sqlite3_column_int(consulta, 2);
+
+        dato->temp_min = sqlite3_column_double(consulta, 3);
+        dato->temp_max = sqlite3_column_double(consulta, 4);
+        dato->temp_prom = sqlite3_column_double(consulta, 5);
+
+        dato->sobre_umbral = sqlite3_column_int(consulta, 6);
+
+        (*cantidad)++;
+    }
+
+    sqlite3_finalize(consulta);
+
+    if (resultado != SQLITE_DONE)
+        goto error;
+
+    return 0;
+
+error:
+    fprintf(stderr, "Error al analizar lecturas: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}

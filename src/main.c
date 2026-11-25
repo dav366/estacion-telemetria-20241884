@@ -1,3 +1,4 @@
+
 /*****************************************************************************************************/
 /*           Programación para mecatrónicos                                                          */
 /* Nombre:    Omar David Guzmán Guerrero                                                             */
@@ -9,10 +10,7 @@
 /* Link Repositorio GitHub: https://github.com/dav366/estacion-telemetria-20241884                   */
 /*****************************************************************************************************/
 
-/*****************************************************************************************************/
 /* ESTACIÓN DE TELEMETRÍA */
-/* Programación para Mecatrónicos */
-/*****************************************************************************************************/
 
 #include "datos.h"
 #include "red.h"
@@ -26,6 +24,7 @@
 #include <ctype.h>
 
 #define LOTE_DESCARGA 200
+#define CANTIDAD_MAQUINAS 4
 
 /* Convertir texto a entero */
 static int convertir_entero(const char *texto, int *valor)
@@ -271,7 +270,6 @@ static int comando_descargar(void)
 
     transaccion_activa = 1;
 
-    /* La descarga completa sustituye el conjunto anterior */
     if (datos_lecturas_limpiar(db) != 0)
         goto finalizar;
 
@@ -319,7 +317,6 @@ static int comando_descargar(void)
 
             if (linea[0] != '\0')
             {
-                /* Ignorar el encabezado CSV */
                 if (strncmp(linea, "id,", 3) != 0)
                 {
                     DatosLectura lectura = {0};
@@ -330,7 +327,6 @@ static int comando_descargar(void)
                         goto finalizar;
                     }
 
-                    /* Validar el orden de los identificadores */
                     if (lectura.id < desde_id ||
                         (cantidad_pagina > 0 &&
                          lectura.id <= nuevo_ultimo_id))
@@ -424,6 +420,196 @@ finalizar:
     return resultado;
 }
 
+/* Analizar las lecturas y enviar los resultados */
+static int comando_analizar(void)
+{
+    sqlite3 *db = NULL;
+    RedRespuesta respuesta = {0};
+
+    int red_iniciada = 0;
+    int resultado = 1;
+
+    char texto_umbral[50];
+    double umbral;
+
+    DatosAnalisis analisis[CANTIDAD_MAQUINAS] = {0};
+    int cantidad = 0;
+
+    char json[2048];
+    size_t posicion = 0;
+
+    if (datos_abrir(&db) != 0)
+        goto finalizar;
+
+    if (datos_inicializar(db) != 0)
+        goto finalizar;
+
+    /* Recuperar el umbral guardado durante la configuración */
+    if (datos_config_obtener(
+            db, "umbral_temp",
+            texto_umbral, sizeof(texto_umbral)) != 0)
+    {
+        fprintf(stderr, "No se encontró el umbral de temperatura. "
+                        "Ejecute primero: estacion config\n");
+        goto finalizar;
+    }
+
+    if (convertir_decimal(texto_umbral, &umbral) != 0)
+    {
+        fprintf(stderr, "El umbral de temperatura no es válido.\n");
+        goto finalizar;
+    }
+
+    /* Calcular las estadísticas mediante SQLite */
+    if (datos_lecturas_analizar(
+            db,
+            umbral,
+            analisis,
+            CANTIDAD_MAQUINAS,
+            &cantidad) != 0)
+    {
+        fprintf(stderr, "No se pudieron analizar las lecturas.\n");
+        goto finalizar;
+    }
+
+    if (cantidad != CANTIDAD_MAQUINAS)
+    {
+        fprintf(stderr, "Se esperaban %d máquinas, pero se encontraron %d.\n",
+                CANTIDAD_MAQUINAS, cantidad);
+        goto finalizar;
+    }
+
+    printf("\nANÁLISIS DE LECTURAS\n");
+    printf("Umbral de temperatura: %.2f °C\n\n", umbral);
+
+    /* Construir el objeto JSON */
+    int escritos = snprintf(
+        json,
+        sizeof(json),
+        "{\"maquinas\":["
+    );
+
+    if (escritos < 0 || (size_t)escritos >= sizeof(json))
+        goto finalizar;
+
+    posicion = (size_t)escritos;
+
+    for (int i = 0; i < cantidad; i++)
+    {
+        DatosAnalisis *dato = &analisis[i];
+
+        /* Validar los nombres antes de insertarlos en el JSON */
+        for (size_t j = 0; dato->maquina[j] != '\0'; j++)
+        {
+            unsigned char caracter = (unsigned char)dato->maquina[j];
+
+            if (!isalnum(caracter) && caracter != '_' && caracter != '-')
+            {
+                fprintf(stderr, "Nombre de máquina no válido.\n");
+                goto finalizar;
+            }
+        }
+
+        if (dato->validas > 0)
+        {
+            printf("Máquina: %s\n", dato->maquina);
+            printf("  Lecturas válidas: %d\n", dato->validas);
+            printf("  Lecturas descartadas: %d\n", dato->descartadas);
+            printf("  Temperatura mínima: %.2f\n", dato->temp_min);
+            printf("  Temperatura máxima: %.2f\n", dato->temp_max);
+            printf("  Temperatura promedio: %.2f\n", dato->temp_prom);
+            printf("  Sobre el umbral: %d\n\n", dato->sobre_umbral);
+        }
+        else
+        {
+            printf("Máquina: %s\n", dato->maquina);
+            printf("  Lecturas válidas: 0\n");
+            printf("  Lecturas descartadas: %d\n\n", dato->descartadas);
+        }
+
+        escritos = snprintf(
+            json + posicion,
+            sizeof(json) - posicion,
+            "%s{"
+            "\"maquina\":\"%s\","
+            "\"validas\":%d,"
+            "\"descartadas\":%d,"
+            "\"temp_min\":%.2f,"
+            "\"temp_max\":%.2f,"
+            "\"temp_prom\":%.2f,"
+            "\"sobre_umbral\":%d"
+            "}",
+            i == 0 ? "" : ",",
+            dato->maquina,
+            dato->validas,
+            dato->descartadas,
+            dato->temp_min,
+            dato->temp_max,
+            dato->temp_prom,
+            dato->sobre_umbral
+        );
+
+        if (escritos < 0 ||
+            (size_t)escritos >= sizeof(json) - posicion)
+        {
+            fprintf(stderr, "El JSON de análisis excede su capacidad.\n");
+            goto finalizar;
+        }
+
+        posicion += (size_t)escritos;
+    }
+
+    escritos = snprintf(
+        json + posicion,
+        sizeof(json) - posicion,
+        "]}"
+    );
+
+    if (escritos < 0 ||
+        (size_t)escritos >= sizeof(json) - posicion)
+        goto finalizar;
+
+    printf("Análisis calculado correctamente.\n");
+
+    /* Inicializar la comunicación */
+    if (red_inicializar() != 0)
+        goto finalizar;
+
+    red_iniciada = 1;
+
+    printf("Enviando resultados de análisis al servidor...\n");
+
+    if (red_post(
+            "/api/v1/respuestas/analisis",
+            json,
+            &respuesta) != 0)
+    {
+        fprintf(stderr, "No se pudo enviar el análisis al servidor.\n");
+        goto finalizar;
+    }
+
+    printf("Análisis enviado correctamente.\n");
+    printf("Código HTTP: %ld\n", respuesta.codigo_http);
+
+    if (respuesta.contenido != NULL &&
+        respuesta.contenido[0] != '\0')
+    {
+        printf("Respuesta del servidor: %s\n", respuesta.contenido);
+    }
+
+    resultado = 0;
+
+finalizar:
+    red_liberar_respuesta(&respuesta);
+
+    if (red_iniciada)
+        red_finalizar();
+
+    datos_cerrar(db);
+
+    return resultado;
+}
+
 /* Programa principal */
 int main(int argc, char *argv[])
 {
@@ -440,8 +626,10 @@ int main(int argc, char *argv[])
     if (strcmp(argv[1], "descargar") == 0)
         return comando_descargar();
 
-    if (strcmp(argv[1], "analizar") == 0 ||
-        strcmp(argv[1], "enviar") == 0 ||
+    if (strcmp(argv[1], "analizar") == 0)
+        return comando_analizar();
+
+    if (strcmp(argv[1], "enviar") == 0 ||
         strcmp(argv[1], "escuchar") == 0)
     {
         printf("Comando seleccionado: %s\n", argv[1]);

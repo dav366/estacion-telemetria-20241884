@@ -26,6 +26,22 @@ typedef struct
 
 } DatosLectura;
 
+/* Estadísticas de una máquina */
+typedef struct
+{
+    char maquina[50];
+
+    int validas;
+    int descartadas;
+
+    double temp_min;
+    double temp_max;
+    double temp_prom;
+
+    int sobre_umbral;
+
+} DatosAnalisis;
+
 /* Funciones generales */
 int datos_abrir(sqlite3 **db);
 void datos_cerrar(sqlite3 *db);
@@ -45,5 +61,14 @@ int datos_config_obtener(sqlite3 *db, const char *clave,
 int datos_lectura_guardar(sqlite3 *db, const DatosLectura *lectura);
 int datos_lecturas_limpiar(sqlite3 *db);
 int datos_lecturas_resumen(sqlite3 *db, int *cantidad, long long *suma_ids);
+
+/* Análisis de lecturas */
+int datos_lecturas_analizar(
+    sqlite3 *db,
+    double umbral,
+    DatosAnalisis resultados[],
+    int capacidad,
+    int *cantidad
+);
 
 #endif

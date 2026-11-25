@@ -6,10 +6,13 @@ import json
 TOKEN_PRUEBA = "token-prueba-local"
 
 TOTAL_LECTURAS = 405
+UMBRAL_TEMP = 75.0
+
+MAQUINAS = ["MOTOR", "BOMBA", "VALVULA", "TURBINA"]
 
 
 def generar_lectura(identificador):
-    maquinas = ["MOTOR", "BOMBA", "VALVULA", "TURBINA"]
+    maquinas = MAQUINAS
     maquina = maquinas[(identificador - 1) % len(maquinas)]
 
     temperatura = f"{25 + (identificador % 60) * 0.5:.2f}"
@@ -21,7 +24,7 @@ def generar_lectura(identificador):
     if identificador % 10 == 0:
         estado = "ALARMA"
 
-    # Algunos campos vacíos para comprobar el almacenamiento NULL.
+    # Campos vacíos para comprobar el almacenamiento NULL.
     if identificador == 3:
         temperatura = ""
 
@@ -33,6 +36,132 @@ def generar_lectura(identificador):
         f"2026-11-25 10:00:{identificador % 60:02d},"
         f"{temperatura},{corriente},{vibracion},{estado}"
     )
+
+
+def calcular_analisis_esperado():
+    resultados = {}
+
+    for maquina in MAQUINAS:
+        resultados[maquina] = {
+            "validas": 0,
+            "descartadas": 0,
+            "temperaturas": [],
+            "sobre_umbral": 0
+        }
+
+    for identificador in range(1, TOTAL_LECTURAS + 1):
+        campos = generar_lectura(identificador).split(",")
+
+        maquina = campos[1]
+        temperatura = campos[3]
+        corriente = campos[4]
+        vibracion = campos[5]
+        estado = campos[6]
+
+        registro = resultados[maquina]
+
+        valido = (
+            estado == "OK"
+            and temperatura != ""
+            and corriente != ""
+            and vibracion != ""
+        )
+
+        if not valido:
+            registro["descartadas"] += 1
+            continue
+
+        temp = float(temperatura)
+
+        registro["validas"] += 1
+        registro["temperaturas"].append(temp)
+
+        if temp > UMBRAL_TEMP:
+            registro["sobre_umbral"] += 1
+
+    for registro in resultados.values():
+        temperaturas = registro["temperaturas"]
+
+        if temperaturas:
+            registro["temp_min"] = min(temperaturas)
+            registro["temp_max"] = max(temperaturas)
+            registro["temp_prom"] = (
+                sum(temperaturas) / len(temperaturas)
+            )
+        else:
+            registro["temp_min"] = 0.0
+            registro["temp_max"] = 0.0
+            registro["temp_prom"] = 0.0
+
+        del registro["temperaturas"]
+
+    return resultados
+
+
+def validar_analisis(datos):
+    if not isinstance(datos, dict):
+        return False
+
+    maquinas_recibidas = datos.get("maquinas")
+
+    if not isinstance(maquinas_recibidas, list):
+        return False
+
+    if len(maquinas_recibidas) != len(MAQUINAS):
+        return False
+
+    esperados = calcular_analisis_esperado()
+    recibidos = {}
+
+    for maquina in maquinas_recibidas:
+        if not isinstance(maquina, dict):
+            return False
+
+        nombre = maquina.get("maquina")
+
+        if nombre not in MAQUINAS or nombre in recibidos:
+            return False
+
+        recibidos[nombre] = maquina
+
+    if set(recibidos.keys()) != set(MAQUINAS):
+        return False
+
+    campos_enteros = [
+        "validas",
+        "descartadas",
+        "sobre_umbral"
+    ]
+
+    campos_decimales = [
+        "temp_min",
+        "temp_max",
+        "temp_prom"
+    ]
+
+    for nombre in MAQUINAS:
+        recibido = recibidos[nombre]
+        esperado = esperados[nombre]
+
+        for campo in campos_enteros:
+            valor = recibido.get(campo)
+
+            if isinstance(valor, bool) or not isinstance(valor, int):
+                return False
+
+            if valor != esperado[campo]:
+                return False
+
+        for campo in campos_decimales:
+            valor = recibido.get(campo)
+
+            if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+                return False
+
+            if abs(float(valor) - esperado[campo]) > 0.011:
+                return False
+
+    return True
 
 
 class ServidorPrueba(BaseHTTPRequestHandler):
@@ -141,6 +270,32 @@ class ServidorPrueba(BaseHTTPRequestHandler):
                 self.responder(400, "resultado=incorrecto")
                 return
 
+            self.responder(200, "resultado=correcto")
+            return
+
+        if ruta == "/api/v1/respuestas/analisis":
+            print("\nAnálisis recibido del programa:")
+
+            if not isinstance(datos, dict):
+                self.responder(400, "resultado=incorrecto")
+                return
+
+            for maquina in datos.get("maquinas", []):
+                if isinstance(maquina, dict):
+                    print(
+                        maquina.get("maquina"),
+                        "| Válidas:", maquina.get("validas"),
+                        "| Descartadas:", maquina.get("descartadas"),
+                        "| Promedio:", maquina.get("temp_prom"),
+                        "| Sobre umbral:", maquina.get("sobre_umbral")
+                    )
+
+            if not validar_analisis(datos):
+                print("Validación del análisis: INCORRECTA")
+                self.responder(400, "resultado=incorrecto")
+                return
+
+            print("Validación del análisis: CORRECTA")
             self.responder(200, "resultado=correcto")
             return
 
