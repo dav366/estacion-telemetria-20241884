@@ -124,3 +124,71 @@ static size_t red_recibir_datos(void *datos, size_t tamano,
     /* Informar a libcurl cuantos bytes fueron procesados */
     return bytes;
 }
+
+/* Preparar un manejador para solicitudes HTTP */
+static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
+{
+    /* Crear el manejador de la solicitud */
+    CURL *curl = curl_easy_init();
+
+    /* Comprobar si se pudo crear el manejador */
+    if (curl == NULL)
+    {
+        fprintf(stderr, "Error al crear el manejador HTTP\n");
+        return NULL;
+    }
+
+    /* Configurar la funcion que recibira los datos del servidor */
+    CURLcode resultado = curl_easy_setopt(
+        curl, CURLOPT_WRITEFUNCTION, red_recibir_datos
+    );
+
+    /* Comprobar la configuracion */
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Indicar donde se almacenara la respuesta */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_WRITEDATA, respuesta
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Configurar el tiempo maximo de espera */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_TIMEOUT, 5L
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    /* Configurar el identificador de nuestra aplicacion */
+    resultado = curl_easy_setopt(
+        curl, CURLOPT_USERAGENT, "estacion-itla/1.0"
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        goto error;
+    }
+
+    return curl;
+
+error:
+
+    /* Informar el error de configuracion */
+    fprintf(stderr, "Error al configurar la solicitud HTTP: %s\n",
+            curl_easy_strerror(resultado));
+
+    /* Liberar el manejador */
+    curl_easy_cleanup(curl);
+
+    return NULL;
+}
