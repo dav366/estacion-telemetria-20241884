@@ -53,6 +53,17 @@ typedef struct
 
 } DatosTelemetria;
 
+/* Alarma recibida mediante MQTT */
+typedef struct
+{
+    char codigo[32];
+    char maquina[50];
+    char ts_servidor[30];
+    char ts_recibida[30];
+    char ts_ack[30];
+
+} DatosAlarma;
+
 /* Funciones generales */
 int datos_abrir(sqlite3 **db);
 void datos_cerrar(sqlite3 *db);
@@ -109,5 +120,20 @@ int datos_telemetria_incrementar_intentos(
 );
 
 int datos_telemetria_obtener_ultima_seq(sqlite3 *db, long long *seq);
+
+/* Gestión de alarmas MQTT */
+int datos_alarma_guardar(sqlite3 *db, const DatosAlarma *alarma);
+
+int datos_alarma_confirmada(
+    sqlite3 *db,
+    const char *codigo,
+    int *confirmada
+);
+
+int datos_alarma_confirmar(
+    sqlite3 *db,
+    const char *codigo,
+    const char *ts_ack
+);
 
 #endif

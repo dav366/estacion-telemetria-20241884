@@ -847,3 +847,169 @@ error:
 
     return 1;
 }
+
+
+/* Guardar una alarma recibida mediante MQTT */
+int datos_alarma_guardar(
+    sqlite3 *db,
+    const DatosAlarma *alarma
+)
+{
+    if (db == NULL || alarma == NULL ||
+        alarma->codigo[0] == '\0' ||
+        alarma->maquina[0] == '\0')
+        return 1;
+
+    const char *sql =
+        "INSERT OR IGNORE INTO alarmas "
+        "(codigo, maquina, ts_servidor, ts_recibida, ts_ack) "
+        "VALUES (?, ?, ?, ?, NULLIF(?, ''));";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_text(
+        consulta, 1, alarma->codigo, -1, SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        consulta, 2, alarma->maquina, -1, SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        consulta, 3, alarma->ts_servidor, -1, SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        consulta, 4, alarma->ts_recibida, -1, SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        consulta, 5, alarma->ts_ack, -1, SQLITE_TRANSIENT
+    );
+
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+    consulta = NULL;
+
+    if (resultado != SQLITE_DONE)
+        goto error;
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al guardar alarma: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
+
+/* Comprobar si una alarma ya fue confirmada */
+int datos_alarma_confirmada(
+    sqlite3 *db,
+    const char *codigo,
+    int *confirmada
+)
+{
+    if (db == NULL || codigo == NULL ||
+        codigo[0] == '\0' || confirmada == NULL)
+        return 1;
+
+    const char *sql =
+        "SELECT CASE "
+        "WHEN ts_ack IS NOT NULL AND ts_ack <> '' THEN 1 "
+        "ELSE 0 END "
+        "FROM alarmas WHERE codigo = ?;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_text(
+        consulta, 1, codigo, -1, SQLITE_TRANSIENT
+    );
+
+    resultado = sqlite3_step(consulta);
+
+    if (resultado == SQLITE_ROW)
+    {
+        *confirmada = sqlite3_column_int(consulta, 0);
+        sqlite3_finalize(consulta);
+        return 0;
+    }
+
+    goto error;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al consultar confirmación de alarma: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
+
+/* Registrar la confirmación de una alarma */
+int datos_alarma_confirmar(
+    sqlite3 *db,
+    const char *codigo,
+    const char *ts_ack
+)
+{
+    if (db == NULL || codigo == NULL || codigo[0] == '\0' ||
+        ts_ack == NULL || ts_ack[0] == '\0')
+        return 1;
+
+    const char *sql =
+        "UPDATE alarmas SET ts_ack = ? WHERE codigo = ?;";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db, sql, -1, &consulta, NULL
+    );
+
+    if (resultado != SQLITE_OK)
+        goto error;
+
+    sqlite3_bind_text(
+        consulta, 1, ts_ack, -1, SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        consulta, 2, codigo, -1, SQLITE_TRANSIENT
+    );
+
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+    consulta = NULL;
+
+    if (resultado != SQLITE_DONE || sqlite3_changes(db) == 0)
+        goto error;
+
+    return 0;
+
+error:
+
+    if (consulta != NULL)
+        sqlite3_finalize(consulta);
+
+    fprintf(stderr, "Error al confirmar alarma: %s\n",
+            sqlite3_errmsg(db));
+
+    return 1;
+}
