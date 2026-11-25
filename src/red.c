@@ -21,7 +21,6 @@ int red_inicializar(void)
     {
         fprintf(stderr, "Error al inicializar libcurl: %s\n",
                 curl_easy_strerror(resultado));
-
         return 1;
     }
 
@@ -40,9 +39,7 @@ void red_liberar_respuesta(RedRespuesta *respuesta)
 {
     /* Comprobar que el puntero recibido sea válido */
     if (respuesta == NULL)
-    {
         return;
-    }
 
     /* Liberar el contenido almacenado */
     free(respuesta->contenido);
@@ -62,36 +59,23 @@ static size_t red_recibir_datos(void *datos, size_t tamano,
 
     /* Comprobar que la estructura sea válida */
     if (respuesta == NULL)
-    {
         return 0;
-    }
 
     /* Comprobar que la multiplicación no provoque un desbordamiento */
     if (tamano != 0 && cantidad > (size_t)-1 / tamano)
-    {
         return 0;
-    }
 
     /* Calcular la cantidad de bytes recibidos */
     size_t bytes = tamano * cantidad;
 
     /* Comprobar que existan datos para procesar */
-    if (bytes == 0)
-    {
+    if (bytes == 0 || datos == NULL)
         return 0;
-    }
-
-    if (datos == NULL)
-    {
-        return 0;
-    }
 
     /* Comprobar que exista espacio suficiente para los nuevos datos */
     if (respuesta->longitud == (size_t)-1 ||
         bytes > (size_t)-1 - respuesta->longitud - 1)
-    {
         return 0;
-    }
 
     /* Ampliar la memoria para almacenar los datos recibidos */
     char *nuevo_contenido = realloc(
@@ -101,9 +85,7 @@ static size_t red_recibir_datos(void *datos, size_t tamano,
 
     /* Comprobar si se pudo reservar la memoria */
     if (nuevo_contenido == NULL)
-    {
         return 0;
-    }
 
     /* Actualizar el puntero al contenido */
     respuesta->contenido = nuevo_contenido;
@@ -123,6 +105,86 @@ static size_t red_recibir_datos(void *datos, size_t tamano,
 
     /* Informar a libcurl cuántos bytes fueron procesados */
     return bytes;
+}
+
+/* Comprobar si una ruta necesita autenticación */
+static int red_requiere_autenticacion(const char *ruta)
+{
+    /* El endpoint ping no requiere autenticación */
+    if (ruta != NULL && strcmp(ruta, "/api/v1/ping") == 0)
+        return 0;
+
+    return 1;
+}
+
+/* Añadir la cabecera de autenticación Bearer */
+static int red_agregar_autenticacion(
+    struct curl_slist **cabeceras)
+{
+    /* Obtener el token desde las variables de entorno */
+    const char *token = getenv("ITLA_TOKEN");
+
+    /* Comprobar que el token exista y no esté vacío */
+    if (token == NULL || token[0] == '\0')
+    {
+        fprintf(stderr, "Error: variable ITLA_TOKEN no configurada\n");
+        return 1;
+    }
+
+    /* Evitar caracteres que puedan alterar la cabecera HTTP */
+    if (strchr(token, '\r') != NULL || strchr(token, '\n') != NULL)
+    {
+        fprintf(stderr, "Error: token de autenticación no válido\n");
+        return 1;
+    }
+
+    /* Calcular el espacio necesario para la cabecera */
+    int longitud = snprintf(
+        NULL, 0, "Authorization: Bearer %s", token
+    );
+
+    if (longitud < 0)
+    {
+        fprintf(stderr, "Error al calcular la cabecera de autenticación\n");
+        return 1;
+    }
+
+    /* Reservar memoria para construir la cabecera */
+    char *autorizacion = malloc((size_t)longitud + 1);
+
+    if (autorizacion == NULL)
+    {
+        fprintf(stderr, "Error al reservar memoria para la autenticación\n");
+        return 1;
+    }
+
+    /* Construir la cabecera Authorization */
+    snprintf(
+        autorizacion,
+        (size_t)longitud + 1,
+        "Authorization: Bearer %s",
+        token
+    );
+
+    /* Añadir la cabecera a la lista existente */
+    struct curl_slist *nuevas_cabeceras = curl_slist_append(
+        *cabeceras, autorizacion
+    );
+
+    /* Liberar la memoria temporal */
+    free(autorizacion);
+
+    /* Comprobar si se pudo añadir la cabecera */
+    if (nuevas_cabeceras == NULL)
+    {
+        fprintf(stderr, "Error al preparar la autenticación HTTP\n");
+        return 1;
+    }
+
+    /* Actualizar la lista de cabeceras */
+    *cabeceras = nuevas_cabeceras;
+
+    return 0;
 }
 
 /* Preparar un manejador para solicitudes HTTP */
@@ -150,11 +212,8 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
         curl, CURLOPT_WRITEFUNCTION, red_recibir_datos
     );
 
-    /* Comprobar la configuración */
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Indicar dónde se almacenará la respuesta */
     resultado = curl_easy_setopt(
@@ -162,9 +221,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Configurar el tiempo máximo de espera */
     resultado = curl_easy_setopt(
@@ -172,9 +229,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Configurar el identificador de nuestra aplicación */
     resultado = curl_easy_setopt(
@@ -182,9 +237,7 @@ static CURL *red_preparar_solicitud(RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     return curl;
 
@@ -216,14 +269,9 @@ static char *red_construir_url(const char *ruta)
 
     /* Calcular el espacio necesario para construir la URL */
     int longitud = snprintf(
-        NULL,
-        0,
-        "http://%s:4000%s",
-        host,
-        ruta
+        NULL, 0, "http://%s:4000%s", host, ruta
     );
 
-    /* Comprobar si se pudo calcular la longitud */
     if (longitud < 0)
     {
         fprintf(stderr, "Error al calcular la longitud de la URL\n");
@@ -233,7 +281,6 @@ static char *red_construir_url(const char *ruta)
     /* Reservar memoria para almacenar la URL */
     char *url = malloc((size_t)longitud + 1);
 
-    /* Comprobar si se pudo reservar la memoria */
     if (url == NULL)
     {
         fprintf(stderr, "Error al reservar memoria para la URL\n");
@@ -242,11 +289,8 @@ static char *red_construir_url(const char *ruta)
 
     /* Construir la URL completa */
     snprintf(
-        url,
-        (size_t)longitud + 1,
-        "http://%s:4000%s",
-        host,
-        ruta
+        url, (size_t)longitud + 1,
+        "http://%s:4000%s", host, ruta
     );
 
     return url;
@@ -262,6 +306,13 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
         return 1;
     }
 
+    /* Comprobar que la ruta sea válida */
+    if (ruta == NULL || ruta[0] != '/')
+    {
+        fprintf(stderr, "Error: ruta no válida\n");
+        return 1;
+    }
+
     /* Liberar cualquier respuesta anterior */
     red_liberar_respuesta(respuesta);
 
@@ -269,9 +320,7 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     char *url = red_construir_url(ruta);
 
     if (url == NULL)
-    {
         return 1;
-    }
 
     /* Preparar el manejador HTTP */
     CURL *curl = red_preparar_solicitud(respuesta);
@@ -280,6 +329,29 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         free(url);
         return 1;
+    }
+
+    /* Preparar la lista de cabeceras HTTP */
+    struct curl_slist *cabeceras = NULL;
+
+    /* Comprobar si la ruta necesita autenticación */
+    if (red_requiere_autenticacion(ruta))
+    {
+        /* Añadir la cabecera Bearer */
+        if (red_agregar_autenticacion(&cabeceras) != 0)
+            goto error;
+
+        /* Configurar las cabeceras en libcurl */
+        CURLcode resultado = curl_easy_setopt(
+            curl, CURLOPT_HTTPHEADER, cabeceras
+        );
+
+        if (resultado != CURLE_OK)
+        {
+            fprintf(stderr, "Error al configurar la autenticación: %s\n",
+                    curl_easy_strerror(resultado));
+            goto error;
+        }
     }
 
     /* Configurar la dirección de la solicitud */
@@ -291,10 +363,7 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         fprintf(stderr, "Error al configurar la URL: %s\n",
                 curl_easy_strerror(resultado));
-
-        curl_easy_cleanup(curl);
-        free(url);
-        return 1;
+        goto error;
     }
 
     /* Ejecutar la solicitud HTTP */
@@ -304,11 +373,7 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         fprintf(stderr, "Error en la solicitud GET: %s\n",
                 curl_easy_strerror(resultado));
-
-        curl_easy_cleanup(curl);
-        free(url);
-        red_liberar_respuesta(respuesta);
-        return 1;
+        goto error;
     }
 
     /* Obtener el código de respuesta HTTP */
@@ -320,14 +385,11 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         fprintf(stderr, "Error al obtener el código HTTP: %s\n",
                 curl_easy_strerror(resultado));
-
-        curl_easy_cleanup(curl);
-        free(url);
-        red_liberar_respuesta(respuesta);
-        return 1;
+        goto error;
     }
 
     /* Liberar los recursos utilizados */
+    curl_slist_free_all(cabeceras);
     curl_easy_cleanup(curl);
     free(url);
 
@@ -337,19 +399,29 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         fprintf(stderr, "Error: el servidor respondió con HTTP %ld\n",
                 respuesta->codigo_http);
-
         red_liberar_respuesta(respuesta);
         return 1;
     }
 
     return 0;
+
+error:
+
+    /* Liberar los recursos utilizados */
+    curl_slist_free_all(cabeceras);
+    curl_easy_cleanup(curl);
+    free(url);
+    red_liberar_respuesta(respuesta);
+
+    return 1;
 }
 
 /* Realizar una solicitud HTTP POST */
 int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
 {
     /* Comprobar que los parámetros sean válidos */
-    if (ruta == NULL || json == NULL || respuesta == NULL)
+    if (ruta == NULL || ruta[0] != '/' ||
+        json == NULL || respuesta == NULL)
     {
         fprintf(stderr, "Error: parámetros de solicitud POST no válidos\n");
         return 1;
@@ -362,9 +434,7 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     char *url = red_construir_url(ruta);
 
     if (url == NULL)
-    {
         return 1;
-    }
 
     /* Preparar el manejador HTTP */
     CURL *curl = red_preparar_solicitud(respuesta);
@@ -390,15 +460,21 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
         return 1;
     }
 
+    /* Comprobar si la ruta necesita autenticación */
+    if (red_requiere_autenticacion(ruta))
+    {
+        /* Añadir la cabecera Bearer */
+        if (red_agregar_autenticacion(&cabeceras) != 0)
+            goto error;
+    }
+
     /* Configurar la dirección de la solicitud */
     CURLcode resultado = curl_easy_setopt(
         curl, CURLOPT_URL, url
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Configurar las cabeceras HTTP */
     resultado = curl_easy_setopt(
@@ -406,9 +482,7 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Configurar el contenido JSON que se enviará */
     resultado = curl_easy_setopt(
@@ -416,9 +490,7 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Establecer el tamaño del contenido enviado */
     resultado = curl_easy_setopt(
@@ -426,17 +498,13 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Ejecutar la solicitud HTTP */
     resultado = curl_easy_perform(curl);
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Obtener el código de respuesta HTTP */
     resultado = curl_easy_getinfo(
@@ -444,9 +512,7 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     );
 
     if (resultado != CURLE_OK)
-    {
         goto error;
-    }
 
     /* Liberar los recursos utilizados */
     curl_slist_free_all(cabeceras);
@@ -459,7 +525,6 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     {
         fprintf(stderr, "Error: el servidor respondió con HTTP %ld\n",
                 respuesta->codigo_http);
-
         red_liberar_respuesta(respuesta);
         return 1;
     }
