@@ -251,3 +251,99 @@ static char *red_construir_url(const char *ruta)
 
     return url;
 }
+
+
+/* Realizar una solicitud HTTP GET */
+int red_get(const char *ruta, RedRespuesta *respuesta)
+{
+    /* Comprobar que la estructura de respuesta sea válida */
+    if (respuesta == NULL)
+    {
+        fprintf(stderr, "Error: estructura de respuesta no válida\n");
+        return 1;
+    }
+
+    /* Inicializar los valores de la respuesta */
+    respuesta->contenido = NULL;
+    respuesta->longitud = 0;
+    respuesta->codigo_http = 0;
+
+    /* Construir la dirección del servidor */
+    char *url = red_construir_url(ruta);
+
+    if (url == NULL)
+    {
+        return 1;
+    }
+
+    /* Preparar el manejador HTTP */
+    CURL *curl = red_preparar_solicitud(respuesta);
+
+    if (curl == NULL)
+    {
+        free(url);
+        return 1;
+    }
+
+    /* Configurar la dirección de la solicitud */
+    CURLcode resultado = curl_easy_setopt(
+        curl, CURLOPT_URL, url
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        fprintf(stderr, "Error al configurar la URL: %s\n",
+                curl_easy_strerror(resultado));
+
+        curl_easy_cleanup(curl);
+        free(url);
+        return 1;
+    }
+
+    /* Ejecutar la solicitud HTTP */
+    resultado = curl_easy_perform(curl);
+
+    if (resultado != CURLE_OK)
+    {
+        fprintf(stderr, "Error en la solicitud GET: %s\n",
+                curl_easy_strerror(resultado));
+
+        curl_easy_cleanup(curl);
+        free(url);
+        red_liberar_respuesta(respuesta);
+        return 1;
+    }
+
+    /* Obtener el código de respuesta HTTP */
+    resultado = curl_easy_getinfo(
+        curl, CURLINFO_RESPONSE_CODE, &respuesta->codigo_http
+    );
+
+    if (resultado != CURLE_OK)
+    {
+        fprintf(stderr, "Error al obtener el código HTTP: %s\n",
+                curl_easy_strerror(resultado));
+
+        curl_easy_cleanup(curl);
+        free(url);
+        red_liberar_respuesta(respuesta);
+        return 1;
+    }
+
+    /* Liberar los recursos utilizados */
+    curl_easy_cleanup(curl);
+    free(url);
+
+    /* Comprobar si el servidor respondió correctamente */
+    if (respuesta->codigo_http < 200 ||
+        respuesta->codigo_http >= 300)
+    {
+        fprintf(stderr, "Error: el servidor respondió con HTTP %ld\n",
+                respuesta->codigo_http);
+
+        red_liberar_respuesta(respuesta);
+        return 1;
+    }
+
+    return 0;
+}
