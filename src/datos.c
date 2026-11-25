@@ -11,17 +11,13 @@
 /* Abrir o crear la base de datos local */
 int datos_abrir(sqlite3 **db)
 {
-    /* Comprobar que se recibió un puntero válido */
     if (db == NULL)
         return 1;
 
-    /* Inicializar el puntero */
     *db = NULL;
 
-    /* Abrir o crear el archivo de base de datos */
     int resultado = sqlite3_open("estacion.db", db);
 
-    /* Comprobar si SQLite pudo abrir la base de datos */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al abrir la base de datos: %s\n",
@@ -31,11 +27,9 @@ int datos_abrir(sqlite3 **db)
             sqlite3_close(*db);
 
         *db = NULL;
-
         return 1;
     }
 
-    /* Establecer tiempo máximo de espera por bloqueos */
     sqlite3_busy_timeout(*db, 2000);
 
     printf("Base de datos abierta correctamente.\n");
@@ -46,7 +40,6 @@ int datos_abrir(sqlite3 **db)
 /* Cerrar la conexión con la base de datos */
 void datos_cerrar(sqlite3 *db)
 {
-    /* Comprobar que exista una conexión */
     if (db != NULL)
     {
         sqlite3_close(db);
@@ -57,15 +50,12 @@ void datos_cerrar(sqlite3 *db)
 /* Crear las tablas necesarias del sistema */
 int datos_inicializar(sqlite3 *db)
 {
-    /* Comprobar que exista una conexión válida */
     if (db == NULL)
         return 1;
 
-    /* Activar el modo de registro WAL */
     const char *sql_wal =
         "PRAGMA journal_mode = WAL;";
 
-    /* Definir las tablas de la base de datos */
     const char *sql_tablas =
         "CREATE TABLE IF NOT EXISTS config ("
         "clave TEXT PRIMARY KEY,"
@@ -99,7 +89,6 @@ int datos_inicializar(sqlite3 *db)
         "ts_ack TEXT"
         ");";
 
-    /* Ejecutar la configuración WAL */
     char *mensaje_error = NULL;
 
     int resultado = sqlite3_exec(
@@ -110,7 +99,6 @@ int datos_inicializar(sqlite3 *db)
         &mensaje_error
     );
 
-    /* Comprobar el resultado de la configuración */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al activar WAL: %s\n",
@@ -122,11 +110,9 @@ int datos_inicializar(sqlite3 *db)
         return 1;
     }
 
-    /* Liberar posibles mensajes de error */
     sqlite3_free(mensaje_error);
     mensaje_error = NULL;
 
-    /* Crear las tablas */
     resultado = sqlite3_exec(
         db,
         sql_tablas,
@@ -135,7 +121,6 @@ int datos_inicializar(sqlite3 *db)
         &mensaje_error
     );
 
-    /* Comprobar si las tablas fueron creadas */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al crear las tablas: %s\n",
@@ -147,7 +132,6 @@ int datos_inicializar(sqlite3 *db)
         return 1;
     }
 
-    /* Liberar recursos */
     sqlite3_free(mensaje_error);
 
     printf("Tablas de la base de datos inicializadas.\n");
@@ -158,18 +142,15 @@ int datos_inicializar(sqlite3 *db)
 /* Guardar o actualizar un parámetro de configuración */
 int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor)
 {
-    /* Comprobar que los argumentos sean válidos */
     if (db == NULL || clave == NULL || valor == NULL)
         return 1;
 
-    /* Preparar la consulta SQL */
     const char *sql =
         "INSERT INTO config (clave, valor) VALUES (?, ?) "
         "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor;";
 
     sqlite3_stmt *consulta = NULL;
 
-    /* Preparar la sentencia */
     int resultado = sqlite3_prepare_v2(
         db,
         sql,
@@ -178,7 +159,6 @@ int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor)
         NULL
     );
 
-    /* Comprobar si la sentencia fue preparada */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al preparar la configuración: %s\n",
@@ -186,7 +166,6 @@ int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor)
         return 1;
     }
 
-    /* Asignar los valores a los parámetros */
     resultado = sqlite3_bind_text(
         consulta, 1, clave, -1, SQLITE_TRANSIENT
     );
@@ -198,7 +177,6 @@ int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor)
         );
     }
 
-    /* Comprobar si los parámetros fueron asignados */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al asignar la configuración: %s\n",
@@ -208,13 +186,10 @@ int datos_config_guardar(sqlite3 *db, const char *clave, const char *valor)
         return 1;
     }
 
-    /* Ejecutar la consulta */
     resultado = sqlite3_step(consulta);
 
-    /* Liberar la sentencia */
     sqlite3_finalize(consulta);
 
-    /* Comprobar el resultado */
     if (resultado != SQLITE_DONE)
     {
         fprintf(stderr, "Error al guardar la configuración: %s\n",
@@ -233,17 +208,14 @@ int datos_config_obtener(
     size_t capacidad
 )
 {
-    /* Comprobar que los argumentos sean válidos */
     if (db == NULL || clave == NULL || valor == NULL || capacidad == 0)
         return 1;
 
-    /* Preparar la consulta SQL */
     const char *sql =
         "SELECT valor FROM config WHERE clave = ?;";
 
     sqlite3_stmt *consulta = NULL;
 
-    /* Preparar la sentencia */
     int resultado = sqlite3_prepare_v2(
         db,
         sql,
@@ -252,7 +224,6 @@ int datos_config_obtener(
         NULL
     );
 
-    /* Comprobar si la sentencia fue preparada */
     if (resultado != SQLITE_OK)
     {
         fprintf(stderr, "Error al preparar la consulta: %s\n",
@@ -260,7 +231,6 @@ int datos_config_obtener(
         return 1;
     }
 
-    /* Asignar la clave que se desea buscar */
     resultado = sqlite3_bind_text(
         consulta, 1, clave, -1, SQLITE_TRANSIENT
     );
@@ -274,12 +244,10 @@ int datos_config_obtener(
         return 1;
     }
 
-    /* Ejecutar la consulta */
     resultado = sqlite3_step(consulta);
 
     if (resultado == SQLITE_ROW)
     {
-        /* Obtener el valor almacenado */
         const unsigned char *dato = sqlite3_column_text(consulta, 0);
 
         if (dato == NULL)
@@ -288,10 +256,8 @@ int datos_config_obtener(
             return 1;
         }
 
-        /* Obtener la longitud del valor */
         size_t longitud = (size_t)sqlite3_column_bytes(consulta, 0);
 
-        /* Comprobar que exista espacio suficiente */
         if (longitud >= capacidad)
         {
             fprintf(stderr, "Error: espacio insuficiente para recuperar la configuración.\n");
@@ -300,7 +266,6 @@ int datos_config_obtener(
             return 1;
         }
 
-        /* Copiar el valor recuperado */
         memcpy(valor, dato, longitud);
         valor[longitud] = '\0';
     }
@@ -316,8 +281,93 @@ int datos_config_obtener(
         return 1;
     }
 
-    /* Liberar la sentencia */
     sqlite3_finalize(consulta);
+
+    return 0;
+}
+
+/* Guardar una lectura de la planta */
+int datos_lectura_guardar(sqlite3 *db, const DatosLectura *lectura)
+{
+    if (db == NULL || lectura == NULL)
+        return 1;
+
+    /* Preparar la consulta para insertar la lectura */
+    const char *sql =
+        "INSERT OR IGNORE INTO lecturas_planta "
+        "(id, maquina, ts, temp, corriente, vibracion, estado) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
+        db,
+        sql,
+        -1,
+        &consulta,
+        NULL
+    );
+
+    if (resultado != SQLITE_OK)
+    {
+        fprintf(stderr, "Error al preparar la lectura: %s\n",
+                sqlite3_errmsg(db));
+        return 1;
+    }
+
+    /* Asignar el identificador */
+    resultado = sqlite3_bind_int(consulta, 1, lectura->id);
+
+    /* Asignar el nombre de la máquina */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_text(
+            consulta, 2, lectura->maquina, -1, SQLITE_TRANSIENT
+        );
+
+    /* Asignar la fecha y hora */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_text(
+            consulta, 3, lectura->ts, -1, SQLITE_TRANSIENT
+        );
+
+    /* Asignar la temperatura */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_double(consulta, 4, lectura->temp);
+
+    /* Asignar la corriente */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_double(consulta, 5, lectura->corriente);
+
+    /* Asignar la vibración */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_double(consulta, 6, lectura->vibracion);
+
+    /* Asignar el estado */
+    if (resultado == SQLITE_OK)
+        resultado = sqlite3_bind_text(
+            consulta, 7, lectura->estado, -1, SQLITE_TRANSIENT
+        );
+
+    if (resultado != SQLITE_OK)
+    {
+        fprintf(stderr, "Error al asignar los datos de la lectura: %s\n",
+                sqlite3_errmsg(db));
+
+        sqlite3_finalize(consulta);
+        return 1;
+    }
+
+    /* Ejecutar la inserción */
+    resultado = sqlite3_step(consulta);
+
+    sqlite3_finalize(consulta);
+
+    if (resultado != SQLITE_DONE)
+    {
+        fprintf(stderr, "Error al guardar la lectura: %s\n",
+                sqlite3_errmsg(db));
+        return 1;
+    }
 
     return 0;
 }

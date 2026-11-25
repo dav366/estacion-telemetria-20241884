@@ -15,6 +15,17 @@ int main(void)
     /* Arreglo para recuperar configuraciones */
     char valor[100];
 
+    /* Estructura para probar el almacenamiento de lecturas */
+    DatosLectura lectura = {
+        999999,
+        "MOTOR_PRUEBA",
+        "2026-11-25 12:00:00",
+        45.5,
+        2.1,
+        0.3,
+        "OK"
+    };
+
     /* Abrir la base de datos */
     if (datos_abrir(&db) != 0)
     {
@@ -84,10 +95,63 @@ int main(void)
 
     printf("Prueba de actualización completada: %s\n", valor);
 
-    /* Eliminar el registro utilizado durante la prueba */
-    int resultado = sqlite3_exec(
+    /* Probar el almacenamiento de una lectura */
+    if (datos_lectura_guardar(db, &lectura) != 0)
+    {
+        fprintf(stderr, "Error al guardar la lectura de prueba.\n");
+        datos_cerrar(db);
+        return 1;
+    }
+
+    printf("Prueba de inserción de lectura completada.\n");
+
+    /* Intentar insertar nuevamente la misma lectura */
+    if (datos_lectura_guardar(db, &lectura) != 0)
+    {
+        fprintf(stderr, "Error al comprobar los duplicados.\n");
+        datos_cerrar(db);
+        return 1;
+    }
+
+    /* Comprobar que solamente exista una lectura con ese ID */
+    sqlite3_stmt *consulta = NULL;
+
+    int resultado = sqlite3_prepare_v2(
         db,
-        "DELETE FROM config WHERE clave = 'prueba_sqlite';",
+        "SELECT COUNT(*) FROM lecturas_planta WHERE id = ?;",
+        -1,
+        &consulta,
+        NULL
+    );
+
+    if (resultado != SQLITE_OK)
+    {
+        fprintf(stderr, "Error al preparar la consulta de lectura.\n");
+        datos_cerrar(db);
+        return 1;
+    }
+
+    sqlite3_bind_int(consulta, 1, lectura.id);
+
+    resultado = sqlite3_step(consulta);
+
+    if (resultado != SQLITE_ROW || sqlite3_column_int(consulta, 0) != 1)
+    {
+        fprintf(stderr, "La comprobación de duplicados falló.\n");
+        sqlite3_finalize(consulta);
+        datos_cerrar(db);
+        return 1;
+    }
+
+    sqlite3_finalize(consulta);
+
+    printf("Prueba de prevención de duplicados completada.\n");
+
+    /* Eliminar los registros utilizados durante las pruebas */
+    resultado = sqlite3_exec(
+        db,
+        "DELETE FROM config WHERE clave = 'prueba_sqlite';"
+        "DELETE FROM lecturas_planta WHERE id = 999999;",
         NULL,
         NULL,
         NULL
