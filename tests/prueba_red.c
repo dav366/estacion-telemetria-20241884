@@ -1,3 +1,4 @@
+
 /* PRUEBA DEL MÓDULO DE COMUNICACIÓN */
 
 #include <stdio.h>
@@ -13,7 +14,7 @@ int main(int argc, char *argv[])
     /* Comprobar los argumentos recibidos */
     if (argc != 2)
     {
-        fprintf(stderr, "Uso: %s <ping|config>\n", argv[0]);
+        fprintf(stderr, "Uso: %s <ping|config|post>\n", argv[0]);
         return 1;
     }
 
@@ -28,10 +29,19 @@ int main(int argc, char *argv[])
     {
         resultado = red_get("/api/v1/ping", &respuesta);
     }
-    /* Probar un endpoint protegido */
+    /* Probar un endpoint GET protegido */
     else if (strcmp(argv[1], "config") == 0)
     {
         resultado = red_get("/api/v1/config", &respuesta);
+    }
+    /* Probar un endpoint POST protegido */
+    else if (strcmp(argv[1], "post") == 0)
+    {
+        resultado = red_post(
+            "/api/v1/telemetria",
+            "{\"temperatura\":25.5}",
+            &respuesta
+        );
     }
     else
     {
