@@ -339,7 +339,12 @@ int red_get(const char *ruta, RedRespuesta *respuesta)
     {
         /* Añadir la cabecera Bearer */
         if (red_agregar_autenticacion(&cabeceras) != 0)
-            goto error;
+{
+    curl_slist_free_all(cabeceras);
+    curl_easy_cleanup(curl);
+    free(url);
+    return 1;
+}
 
         /* Configurar las cabeceras en libcurl */
         CURLcode resultado = curl_easy_setopt(
@@ -463,9 +468,15 @@ int red_post(const char *ruta, const char *json, RedRespuesta *respuesta)
     /* Comprobar si la ruta necesita autenticación */
     if (red_requiere_autenticacion(ruta))
     {
-        /* Añadir la cabecera Bearer */
-        if (red_agregar_autenticacion(&cabeceras) != 0)
-            goto error;
+        
+    /* Añadir la cabecera Bearer */
+    if (red_agregar_autenticacion(&cabeceras) != 0)
+{
+    curl_slist_free_all(cabeceras);
+    curl_easy_cleanup(curl);
+    free(url);
+    return 1;
+}
     }
 
     /* Configurar la dirección de la solicitud */
