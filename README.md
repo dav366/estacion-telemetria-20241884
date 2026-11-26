@@ -342,8 +342,55 @@ Las credenciales se proporcionan mediante variables de entorno. No se deben incl
 
 ## Historial de cambios
 
-Para consultar los commits y sus fechas:
+Lista de todos los commits y sus fechas:
 
 ```bash
-git log --pretty=format:'%h | %cd | %s' --date=format:'%d/%m/%Y %H:%M'
+a52a8f5 | 25/11/2026 23:24 | Documentando la estación de telemetría en README
+6583fce | 25/11/2026 22:51 | Automatizando la compilación del proyecto mediante Makefile
+abf78c0 | 25/11/2026 22:50 | Depurando de respuestas HTTP en confirmación de alarmas
+919af38 | 25/11/2026 21:22 | Corrigiendo la paginación para completar la evaluación de descarga
+f383319 | 25/11/2026 20:10 | Agregando la confirmación HTTP de alarmas
+b0287f1 | 25/11/2026 18:57 | Integrando la escucha y reconexión de alarmas MQTT
+ff316f1 | 25/11/2026 18:34 | Agregando la suscripción MQTT de alarmas
+7bcc767 | 25/11/2026 18:13 | Agregando la gestión de alarmas en SQLite
+6895af6 | 25/11/2026 17:58 | Agregando la publicación de latidos MQTT
+113c649 | 25/11/2026 16:30 | Implementando el envío resiliente de telemetría
+f037a11 | 25/11/2026 15:00 | Implementando los módulos de almacenamiento, comunicación y sensores
+a53690d | 25/11/2026 14:24 | Desarrollando el módulo integral de análisis y validación de lecturas de telemetría
+71cafc5 | 25/11/2026 12:16 | Corrigiendo paginación y verificando descarga de lecturas
+742bce2 | 25/11/2026 03:46 | Implementando la descarga de lecturas
+a75a38d | 25/11/2026 03:45 | Renovando el servidor de pruebas
+08f713b | 25/11/2026 03:09 | Ampliando el almacenamiento de lecturas
+c431b70 | 25/11/2026 02:50 | Integrando descarga de configuración en el programa principal
+b413181 | 25/11/2026 02:35 | Expandiendo configuración del servidor de pruebas
+3df7fdc | 25/11/2026 02:27 | Ampliando pruebas de configuración en SQLite
+8c18ba3 | 25/11/2026 02:22 | Incorporando gestión de configuración en SQLite
+027e890 | 25/11/2026 01:58 | Integrando y verificando el módulo de almacenamiento SQLite
+077343f | 25/11/2026 01:33 | Implementando la estructura inicial del módulo de almacenamiento
+7092157 | 25/11/2026 01:23 | Ampliando las pruebas del módulo de comunicación
+ce615b5 | 25/11/2026 00:57 | Preparando pruebas locales del módulo de comunicación
+40c8395 | 25/11/2026 00:22 | Agregando autenticación Bearer a solicitudes HTTP
+5c70bd0 | 25/11/2026 00:10 | Implementando solicitudes HTTP POST
+64f2f0e | 25/11/2026 00:03 | Implementando solicitudes HTTP GET
+04e51a6 | 24/11/2026 23:25 | Agregando construccion dinamica de URL HTTP
+1f5f249 | 24/11/2026 23:05 | Agregando configuracion del manejador HTTP
+9fe73dc | 24/11/2026 18:09 | Corregiendo validacion de datos recibidos
+cb1d572 | 24/11/2026 18:01 | Agregando la recepcion de datos HTTP
+ceac8fe | 24/11/2026 17:47 | Implementar administracion inicial de libcurl y respuestas HTTP
+2175ac0 | 24/11/2026 01:03 | Implementando inicializacion y cierre de libcurl
+181d03c | 24/11/2026 00:47 | Creando archivo de implementacion del modulo de comunicacion
+e5769b2 | 24/11/2026 00:24 | Definiendo la interfaz del modulo de comunicacion HTTP
+63ee9fc | 24/11/2026 00:02 | Creando encabezado inicial del modulo de red
+979ade4 | 23/11/2026 23:53 | Organizando los archivos de prueba en otro directorio
+3b5d02f | 23/11/2026 22:27 | Implementando reconocimiento de comandos en main.c
+4b43e20 | 23/11/2026 22:21 | Implementando funcion principal y validacion de argumentos
+7eb1cfb | 23/11/2026 21:52 | Creando estructura inicial de main.c
+91807be | 23/11/2026 01:56 | Agregando la prueba de inicializacion de MQTT con libmosquitto
+bbe04f0 | 23/11/2026 00:52 | Implementando y probando comunicacion HTTP con libcurl en Ubuntu
+00a7ba8 | 22/11/2026 21:05 | Estructurando la sesion HTTP
+958d660 | 22/11/2026 20:25 | Probando la integracion de libcurl
+3136465 | 22/11/2026 20:06 | Probando la integracion del SQLite
+f4a63e2 | 22/11/2026 18:08 | Añadiendo la biblioteca de SQLite
+0a99d69 | 22/11/2026 16:55 | Empezando el proyecto definiendo el .gitignore
+(END)
 ```
