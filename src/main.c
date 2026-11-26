@@ -1225,6 +1225,12 @@ static int procesar_mensaje_alarma(
         return 0;
     }
 
+    printf(
+        "Respuesta ACK | HTTP %ld | Cuerpo: %s\n",
+        respuesta.codigo_http,
+        respuesta.contenido != NULL ? respuesta.contenido : "(vacío)"
+    );
+
     red_liberar_respuesta(&respuesta);
 
     snprintf(ts_ack, sizeof(ts_ack), "%lld",
