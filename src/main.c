@@ -1071,8 +1071,12 @@ static int procesar_mensaje_alarma(
     size_t cantidad_campos = 1;
     size_t longitud_util;
     DatosAlarma alarma = {0};
+    RedRespuesta respuesta = {0};
     char ts_recibida[30];
+    char ts_ack[30];
+    char json[96];
     int confirmada = 0;
+    int escritos;
 
     if (topico == NULL || mensaje == NULL ||
         datos == NULL || datos->db == NULL ||
@@ -1154,6 +1158,18 @@ static int procesar_mensaje_alarma(
         return 0;
     }
 
+    for (size_t i = 0; i < longitudes[1]; i++)
+    {
+        unsigned char caracter = (unsigned char)campos[1][i];
+
+        if (!isalnum(caracter) &&
+            caracter != '_' && caracter != '-')
+        {
+            fprintf(stderr, "Código de alarma no válido.\n");
+            return 0;
+        }
+    }
+
     snprintf(alarma.codigo, sizeof(alarma.codigo), "%s", campos[1]);
     snprintf(alarma.maquina, sizeof(alarma.maquina), "%s", campos[2]);
     snprintf(alarma.ts_servidor, sizeof(alarma.ts_servidor),
@@ -1180,12 +1196,47 @@ static int procesar_mensaje_alarma(
     {
         printf("Alarma %s ya estaba confirmada; se ignora.\n",
                alarma.codigo);
+        return 0;
     }
-    else
+
+    printf("Alarma recibida | Código: %s | Máquina: %s\n",
+           alarma.codigo, alarma.maquina);
+
+    escritos = snprintf(
+        json, sizeof(json),
+        "{\"codigo\":\"%s\"}", alarma.codigo
+    );
+
+    if (escritos < 0 || (size_t)escritos >= sizeof(json))
     {
-        printf("Alarma recibida | Código: %s | Máquina: %s\n",
-               alarma.codigo, alarma.maquina);
+        fprintf(stderr, "No se pudo construir el ACK de la alarma.\n");
+        return 0;
     }
+
+    if (red_post("/api/v1/alarmas/ack", json, &respuesta) != 0)
+    {
+        fprintf(stderr, "No se pudo confirmar la alarma %s en el servidor.\n",
+                alarma.codigo);
+        red_liberar_respuesta(&respuesta);
+        return 0;
+    }
+
+    red_liberar_respuesta(&respuesta);
+
+    snprintf(ts_ack, sizeof(ts_ack), "%lld",
+             (long long)time(NULL));
+
+    if (datos_alarma_confirmar(
+            datos->db, alarma.codigo, ts_ack) != 0)
+    {
+        fprintf(stderr,
+                "El servidor confirmó %s, pero no se pudo guardar ts_ack.\n",
+                alarma.codigo);
+        return 0;
+    }
+
+    printf("ACK enviado y almacenado para la alarma %s.\n",
+           alarma.codigo);
 
     return 0;
 }
@@ -1238,6 +1289,13 @@ static int comando_escuchar(void)
         return 1;
     }
 
+    if (red_inicializar() != 0)
+    {
+        fprintf(stderr, "No se pudo inicializar la conexión HTTP.\n");
+        sqlite3_close(db);
+        return 1;
+    }
+
     contexto.db = db;
     detener_escucha = 0;
 
@@ -1249,6 +1307,7 @@ static int comando_escuchar(void)
         sigaction(SIGTERM, &accion, NULL) != 0)
     {
         perror("No se pudieron configurar las señales");
+        red_finalizar();
         sqlite3_close(db);
         return 1;
     }
@@ -1293,6 +1352,8 @@ static int comando_escuchar(void)
     }
 
     printf("\nDeteniendo escucha de alarmas...\n");
+
+    red_finalizar();
 
     if (sqlite3_close(db) != SQLITE_OK)
     {
