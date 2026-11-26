@@ -357,6 +357,7 @@ static int comando_descargar(void)
 
         int cantidad_pagina = 0;
         int nuevo_ultimo_id = ultimo_id;
+        int id_anterior_pagina = -1;
 
         char *linea = respuesta.contenido;
         char *siguiente;
@@ -385,19 +386,22 @@ static int comando_descargar(void)
                         goto finalizar;
                     }
 
-                    if (lectura.id < desde_id ||
-                        (cantidad_pagina > 0 &&
-                         lectura.id <= nuevo_ultimo_id))
+                    if (lectura.id <= id_anterior_pagina)
                     {
                         fprintf(stderr, "Orden de identificadores inválido.\n");
                         goto finalizar;
                     }
 
+                    id_anterior_pagina = lectura.id;
+
                     if (datos_lectura_guardar(db, &lectura) != 0)
                         goto finalizar;
 
-                    nuevo_ultimo_id = lectura.id;
-                    cantidad_pagina++;
+                    if (lectura.id > ultimo_id)
+                        cantidad_pagina++;
+
+                    if (lectura.id > nuevo_ultimo_id)
+                        nuevo_ultimo_id = lectura.id;
                 }
             }
 
